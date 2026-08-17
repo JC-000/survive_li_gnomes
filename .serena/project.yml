@@ -1,0 +1,56 @@
+# the name by which the project can be referenced within Serena/when chatting with the LLM.
+project_name: "survive_li_gnomes"
+
+# the encoding used by text files in the project
+encoding: "utf-8"
+
+line_ending:
+
+language_backend:
+
+# whether to use project's .gitignore files to ignore files
+ignore_all_files_in_gitignore: true
+
+ls_specific_settings: {}
+
+# Firmware blobs and vendor dumps are binary; keep them out of the symbol index.
+ignored_paths:
+  - "firmware/**"
+
+read_only: false
+
+excluded_tools: []
+
+included_optional_tools:
+  - "restart_language_server"
+
+fixed_tools: []
+
+base_modes:
+
+default_modes:
+
+# MicroPython targeting an RP2350A. Device-side modules (machine, rp2, time.sleep_ms)
+# do not exist in host CPython, so the language server will flag them as unresolved
+# imports. That is expected -- do not "fix" those imports.
+initial_prompt: ""
+
+symbol_info_budget:
+
+read_only_memory_patterns: []
+
+ignored_memory_patterns: []
+
+added_modes:
+
+ls_additional_workspace_folders: []
+
+language_servers:
+  - python
+
+ls_workspace_folders:
+  - .
+
+activation_command:
+
+activation_command_timeout: 180.0
