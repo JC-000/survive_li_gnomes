@@ -14,3 +14,6 @@ __pycache__/
 # macOS
 .DS_Store
 .serena/
+
+# Backup artifacts from claude-code-rig tooling
+.gitignore.backup.*
