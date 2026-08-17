@@ -1,10 +1,19 @@
 # CLAUDE.md
 
-MicroPython on a Waveshare **RP2350-Touch-ePaper-1.54**. Host is macOS.
+A Magic 8-Ball on persistent e-paper. MicroPython on a Waveshare
+**RP2350-Touch-ePaper-1.54**. Host is macOS.
 
-**The project's goal is not defined yet** — the repo is a verified hardware
-baseline. Ask before building features; don't infer intent from the directory
-name.
+## The governing constraint: intermittent power
+
+Read `docs/design.md` before changing `src/main.py`. In short: boot never touches
+the panel (e-paper already holds the last answer), nothing is ever written to
+flash, and the panel is always put back to sleep after a refresh.
+
+**Do not add persistence.** Saving the last answer to a file would reintroduce
+the one real corruption risk — a flash write interrupted by a power cut — to
+duplicate what the display already does for free.
+
+Deploy with `./tools/deploy.sh`; `main.py` autoruns at power-on.
 
 ## Before touching hardware code
 
@@ -34,12 +43,18 @@ Everything goes through `uvx mpremote connect /dev/cu.usbmodem101 ...`; nothing
 is installed globally. See `.serena/memories/dev_workflow.md` for the command
 set. After `reset` or `bootloader`, wait for the serial device to reappear.
 
-## Two failure modes that waste time
+## Failure modes that waste time
+
+See `.serena/memories/gotchas_that_cost_time.md` for the full list. The big ones:
 
 - An I2C scan on a pin pair with no pull-ups ACKs **every** address `0x08`-`0x77`.
   That means nothing is there, not that 112 devices are.
 - Creating `I2C(1)` on a second pin pair wedges the block: `scan()` keeps working
   while every read fails `EIO`. Fix with `mpremote reset`.
+- Never poll `rp2.bootsel_button()` alongside `_thread` — it takes over the QSPI
+  bus and produces phantom presses.
+- **Test power-related code from a cold reset.** State left by a previous
+  command (a charged divider, a configured pin) makes broken code look correct.
 
 ## Firmware
 
