@@ -1,19 +1,26 @@
 # CLAUDE.md
 
-MicroPython on an RP2350A board. Host is macOS.
+MicroPython on a Waveshare **RP2350-Touch-ePaper-1.54**. Host is macOS.
 
-**The project's goal is not defined yet** — the repo is scaffolding plus a
-verified hardware baseline. Ask before building features; don't infer intent
-from the directory name.
+**The project's goal is not defined yet** — the repo is a verified hardware
+baseline. Ask before building features; don't infer intent from the directory
+name.
 
 ## Before touching hardware code
 
-Read `docs/hardware.md`. Every constant in `src/board.py` was measured from the
-physical board, not taken from a datasheet or product page. If something
-contradicts it, re-measure rather than assuming the doc is stale.
+Read `docs/hardware.md`. It marks which pins are merely from Waveshare's demo
+code and which were confirmed on this physical board. Don't guess pins — the
+vendor repo is cloneable and authoritative:
+https://github.com/waveshareteam/RP2350-Touch-ePaper-1.54
 
-The board model is **unidentified**, so there is no reference pinout to fall back
-on. Don't guess pin assignments — probe them.
+`src/epaper.py` is vendored Waveshare code (MIT). Its LUT tables and SSD1681
+init sequence are panel-specific magic numbers — don't tidy them.
+
+## Battery reads need GP28 driven
+
+GP29 is the sense pin but returns pure noise unless GP28 is first driven as an
+output. Use `board.Battery()`, which handles it. And use the calibrated 3.390 V
+reference, not 3.3.
 
 ## MicroPython, not CPython
 

@@ -14,8 +14,8 @@ import time
 KNOWN = {
     0x70: "SHTC3 temp/humidity",
     0x51: "PCF85063A RTC",
-    0x38: "FT6236/FT6336 touch",
-    0x18: "unidentified",
+    0x38: "FT6336U touch",
+    0x18: "ES8311 audio codec",
 }
 
 i2c = I2C(1, sda=Pin(6), scl=Pin(7), freq=100_000)
@@ -58,10 +58,14 @@ try:
 except Exception as exc:
     print("RTC:   FAILED", exc)
 
-# --- ADC -------------------------------------------------------------------
-# None of these currently corresponds to the battery; see docs/hardware.md.
-print("ADC:")
-for gp in (26, 27, 28, 29):
-    raw = ADC(Pin(gp)).read_u16()
-    print("  gp%-2d  %-6d  %.3f V" % (gp, raw, raw / 65535 * 3.3))
-print("  core  %.1f C" % (27 - ((ADC(4).read_u16() / 65535 * 3.3) - 0.706) / 0.001721))
+# --- Battery ---------------------------------------------------------------
+# GP28 must be an output before GP29 reads anything meaningful, and the divider
+# then needs ~100 ms to charge. See docs/hardware.md.
+# Build the ADC *before* settling -- ADC(Pin(29)) switches the pin to analog mode,
+# which restarts the charge, so sleeping first buys nothing.
+Pin(28, Pin.OUT, value=1)
+bat_adc = ADC(Pin(29))
+time.sleep_ms(150)
+raw = sum(bat_adc.read_u16() for _ in range(5)) / 5
+print("BAT:   %.2f V  (u16=%d)" % (raw / 65535 * 3.390 * 2, raw))
+print("CORE:  %.1f C" % (27 - ((ADC(4).read_u16() / 65535 * 3.3) - 0.706) / 0.001721))
