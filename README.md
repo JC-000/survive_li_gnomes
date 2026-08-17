@@ -1,8 +1,8 @@
 # survive_li_gnomes
 
-A Magic 8-Ball on a persistent e-paper display. Press a button, get an answer.
-The answer stays on screen with the power off, so it survives the intermittent
-power this thing lives on.
+A Magic 8-Ball on a persistent e-paper display. Press a button, hear it shake,
+get an answer. The answer stays on screen with the power off, so it survives the
+intermittent power this thing lives on.
 
 Hardware: **Waveshare RP2350-Touch-ePaper-1.54** — RP2350A, 16 MB flash,
 200 × 200 SSD1681 e-paper, FT6336U touch, SHTC3, PCF85063A RTC, ES8311 codec,
@@ -16,13 +16,17 @@ The host needs nothing but `uv` — `mpremote` runs via `uvx`.
 ./tools/deploy.sh
 ```
 
-That copies the four device modules and resets the board. `main.py` autoruns at
+That copies the device modules and resets the board. `main.py` autoruns at
 power-on, so there is nothing else to start.
 
 ## Use
 
 Press the **POWER key**, **BOOTSEL**, or **tap the screen** — any of the three
 asks the ball. The board has no brightness button; e-paper has no backlight.
+
+You get a ~0.5 s shake through the onboard codec, then the answer. Sound needs a
+speaker on the board's connector; without one everything still works silently.
+The first press after power-on takes ~2 s longer while the codec comes up.
 
 A refresh takes a few seconds and flashes the panel black/white. That is normal
 for e-paper, not a fault.
@@ -43,10 +47,13 @@ See [docs/design.md](docs/design.md) for why.
 | --- | --- |
 | `src/main.py` | Device entry point — input loop, autoruns at power-on |
 | `src/magic8.py` | The twenty answers, RNG, and screen rendering |
+| `src/shake.py` | Synthesised shake sound; fails soft if audio is unavailable |
+| `src/es8311.py`, `src/audio_pio_mpy.py` | Codec + I2S-over-PIO, vendored from Waveshare |
 | `src/board.py` | Pin map + SHTC3, PCF85063A, FT6336U, Battery |
 | `src/epaper.py` | SSD1681 driver, vendored from Waveshare (MIT) |
 | `examples/display_status.py` | Sensor/battery/clock readout |
 | `tools/probe.py` | Bus scan + battery, run from the host |
+| `tools/input_monitor.py` | Log input transitions — use if a button misbehaves |
 | `tools/deploy.sh` | Copy modules to the board and reset |
 | `docs/design.md` | Why it is built this way |
 | `docs/hardware.md` | Full pinout, what's verified, and the gotchas |
@@ -57,11 +64,11 @@ See [docs/design.md](docs/design.md) for why.
 | Peripheral | Status |
 | --- | --- |
 | E-paper 200 × 200 | Working |
-| FT6336U touch | Working — chip ID `0x64` |
+| FT6336U touch | Working — polled over I2C, not via the INT pin |
 | Battery sense | Working — 4.21 V, matches factory firmware |
 | SHTC3 temp/humidity | Working — used by `examples/display_status.py` |
 | PCF85063A RTC | Working |
-| ES8311 audio | ACKs on I2C only, not driven |
+| ES8311 audio | Working — plays the shake clip |
 | microSD | Untested, no card inserted |
 
 Running MicroPython **v1.28.0** (`RPI_PICO2`, ARM). The factory C firmware was

@@ -15,6 +15,19 @@ duplicate what the display already does for free.
 
 Deploy with `./tools/deploy.sh`; `main.py` autoruns at power-on.
 
+## Audio is optional and must stay optional
+
+`shake.py` swallows its own exceptions and sets `available = False` on failure.
+A silent Magic 8-Ball still works; one that crashes instead of answering does not.
+Don't let an audio error propagate into the press path.
+
+## Touch: poll I2C, never the INT pin
+
+Reg `0xA4` = `0x01` on this board, so the FT6336U's INT line *pulses* rather than
+holding low. Watching GP8 is why touch "worked once and then died". Read
+`TD_STATUS` (reg `0x02`) instead — it is a level and the read clears the
+interrupt. `tools/input_monitor.py` demonstrates the difference if in doubt.
+
 ## Before touching hardware code
 
 Read `docs/hardware.md`. It marks which pins are merely from Waveshare's demo

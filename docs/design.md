@@ -37,11 +37,49 @@ as a broken toy even though it is perfectly random.
 The board has no brightness button (e-paper has no backlight), so *any* of three
 inputs asks the ball:
 
-- **POWER key** on GP24, active-low.
-- **Screen tap** via the FT6336U INT line on GP8.
+- **POWER key** on GP24, active-low. Verified wired — an internal pull-down loses
+  to an external pull-up on that net.
+- **Screen tap**, by polling the FT6336U's `TD_STATUS` register over I2C.
 - **BOOTSEL**, checked last — `rp2.bootsel_button()` momentarily disables
   interrupts and takes over the QSPI CS line, so it is far more expensive than a
   GPIO read.
+
+### Why touch is polled over I2C rather than watching the INT pin
+
+The first version watched GP8 (touch INT) as a level. It worked exactly once and
+then appeared dead. The board ships with FT6336U register `0xA4` = `0x01`,
+FocalTech's *trigger* mode, where INT emits a brief pulse per touch frame instead
+of sitting low while held — so a 50 ms poll catches a pulse by luck and misses
+the rest.
+
+Reading `TD_STATUS` (`0x02`) instead is a level rather than an edge, and the read
+clears the controller's pending interrupt as a side effect. The I2C read is
+wrapped in `try/except OSError`, because a bus glitch must not kill an
+unattended loop.
+
+The controller's reset line (GP16) is now driven high explicitly — nothing on the
+board holds it there.
+
+### Stuck-input safety net
+
+If any input reads down continuously for 30 s, the loop logs it and re-arms.
+A human cannot meaningfully hold a button that long, so re-arming is safe, and it
+beats an unattended device that has silently bricked itself on a stuck line.
+
+## Audio
+
+A shake sound plays before the answer is drawn — the order a real 8-ball works
+in. It is synthesised on the device: three decaying bursts of low-passed noise,
+integer-only, which reads as a die tumbling in liquid. ~50 KB as packed stereo
+frames, versus shipping a WAV on a 3 MB filesystem.
+
+**Audio is strictly optional and must stay that way.** Every entry point in
+`shake.py` swallows its own exceptions and sets `available = False` on failure.
+A silent Magic 8-Ball still works; one that crashes instead of answering does not.
+
+The codec and its ~50 KB clip are brought up lazily on first press, not at boot,
+so a power blip costs nothing. That does mean the *first* press after power-on
+waits ~2 s before any sound.
 
 **Never combine this loop with `_thread`.** Polling BOOTSEL while another core
 executes from flash produces spurious presses — during development that caused

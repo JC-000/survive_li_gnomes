@@ -19,28 +19,59 @@ import time
 import board
 import epaper
 import magic8
+import shake
 
 POLL_MS = 50
+
+
+# A stuck input would otherwise disable the device forever. A human cannot
+# meaningfully hold a button this long, so re-arming after it is safe and beats
+# bricking an unattended device.
+STUCK_MS = 30_000
 
 
 class Inputs:
     """Any button or a screen tap, edge-triggered and debounced."""
 
     def __init__(self, i2c):
+        self.i2c = i2c
         self.power = board.Pin(board.POWER_KEY_PIN, board.Pin.IN, board.Pin.PULL_UP)
-        self.touch_int = board.Pin(board.TOUCH_INT_PIN, board.Pin.IN, board.Pin.PULL_UP)
+
+        # The touch controller's reset line is not held high by anything on the
+        # board -- an internal pull-down wins on GP16 -- so drive it explicitly
+        # or the controller's state is whatever leakage decides.
+        self.touch_rst = board.Pin(board.TOUCH_RST_PIN, board.Pin.OUT, value=1)
+
         try:
             import rp2
 
             self._bootsel = rp2.bootsel_button
         except (ImportError, AttributeError):
             self._bootsel = None
+
+        self._down_since = None
         self._was_down = self.down()
+
+    def _touched(self):
+        """Read the FT6336U's touch-count register.
+
+        Deliberately *not* the INT pin. This board ships with reg 0xA4 = 0x01,
+        FocalTech's "trigger" mode, where INT emits a brief pulse per touch frame
+        rather than sitting low while held -- polling that pin every 50 ms catches
+        a pulse occasionally and misses it the rest of the time. TD_STATUS is a
+        level, and reading it also clears the controller's pending interrupt.
+
+        Swallows I2C errors: a bus glitch must not kill an unattended loop.
+        """
+        try:
+            return bool(self.i2c.readfrom_mem(board.ADDR_TOUCH, 0x02, 1)[0] & 0x0F)
+        except OSError:
+            return False
 
     def down(self):
         if not self.power.value():  # active low
             return True
-        if not self.touch_int.value():  # FT6336U pulls INT low while touched
+        if self._touched():
             return True
         # Checked last: rp2.bootsel_button() momentarily disables interrupts and
         # takes over the QSPI CS line, so it is far more expensive than a GPIO
@@ -53,6 +84,18 @@ class Inputs:
     def pressed(self):
         """True once per press, on the leading edge."""
         now_down = self.down()
+
+        # Safety net: never let a stuck input disable the device permanently.
+        if now_down:
+            if self._down_since is None:
+                self._down_since = time.ticks_ms()
+            elif time.ticks_diff(time.ticks_ms(), self._down_since) > STUCK_MS:
+                print("warning: input stuck down for %d s, re-arming" % (STUCK_MS // 1000))
+                self._was_down = False
+                self._down_since = time.ticks_ms()
+        else:
+            self._down_since = None
+
         edge = now_down and not self._was_down
         self._was_down = now_down
         return edge
@@ -75,6 +118,7 @@ def main():
     i2c = board.bus()
     inputs = Inputs(i2c)
     battery = board.Battery()
+    shaker = shake.Shaker()
 
     epd = None
     last_answer = None
@@ -86,6 +130,10 @@ def main():
             answer = magic8.pick(exclude=last_answer)
             last_answer = answer
             print("->", answer)
+
+            # Shake first, then the answer surfaces -- the order a real 8-ball
+            # works in. Never allowed to raise; a silent ball still works.
+            shaker.play(i2c)
 
             if epd is None:
                 epd = epaper.EPD_1in54()  # constructor also inits

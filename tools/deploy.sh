@@ -10,7 +10,7 @@ PORT="${PORT:-/dev/cu.usbmodem101}"
 cd "$(dirname "$0")/.."
 
 # One file per invocation: mpremote's multi-file cp is fussy about argument form.
-for module in board epaper magic8 main; do
+for module in board epaper magic8 shake es8311 audio_pio_mpy main; do
     echo "  -> ${module}.py"
     uvx --quiet mpremote connect "$PORT" cp "src/${module}.py" ":${module}.py"
 done

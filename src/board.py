@@ -42,7 +42,15 @@ SD_MOSI_PIN = 19
 SD_MISO_PIN = 20
 SD_CS_PIN = 23
 
-CODEC_PA_CTRL_PIN = 0  # ES8311 power-amp enable
+# ES8311 audio. Control is over the shared I2C1 bus at 0x18; the audio data path
+# is I2S driven by PIO, because MicroPython's machine.I2S does not emit MCLK and
+# the codec needs it.
+CODEC_PA_CTRL_PIN = 0  # power-amp enable
+CODEC_DOUT_PIN = 1  # RP2350 -> codec (playback)
+CODEC_DIN_PIN = 2  # codec -> RP2350 (microphone)
+CODEC_MCLK_PIN = 3
+CODEC_BCLK_PIN = 4
+CODEC_LRCLK_PIN = 5
 POWER_KEY_PIN = 24  # active low, needs a pull-up. BOOTSEL is rp2.bootsel_button()
 
 # Battery sense: 200k/200k divider on GP29 (ADC3), gated by GP28.
