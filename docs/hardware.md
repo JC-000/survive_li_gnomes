@@ -35,6 +35,28 @@ physical board on 2026-08-17.
 
 *Verified* — full-refresh draw completed and the panel holds the image.
 
+### Waking a sleeping panel needs PWR restored
+
+`sleep()` calls `module_exit()`, which drives **PWR (GP13) high = off**. The
+vendor's `init()` never restores it — their demo sleeps once at the very end and
+never wakes a sleeping panel. `src/epaper.py` carries a patch for this; see the
+DEVIATION comment in `init()`.
+
+This one is nasty because it fails *silently and successfully*: with the panel
+unpowered, the SPI data still goes out and `ReadBusy` returns immediately (an
+unpowered panel never asserts BUSY), so `display()` completes normally in about
+the usual time. Only the glass never changes. The symptom is "it updated once
+after boot and then stopped".
+
+**BUSY wait time is the tell.** A genuine full refresh holds BUSY for ~1290 ms.
+Zero busy time means the panel is not powered:
+
+| | PWR | BUSY asserted | busy wait |
+| --- | --- | --- | --- |
+| First draw after boot | 0 | yes | 1286 ms |
+| Later draws, before the fix | 1 | **no** | 0 ms |
+| Later draws, after the fix | 0 | yes | 1288 ms |
+
 ## I2C devices
 
 All four on **I2C1, SDA = GP6, SCL = GP7** (vendor uses 400 kHz; works 10 kHz–400 kHz).

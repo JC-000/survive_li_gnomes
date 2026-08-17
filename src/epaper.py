@@ -3,7 +3,12 @@
 #   https://github.com/waveshareteam/RP2350-Touch-ePaper-1.54
 #   examples/MicroPython/03_GUI/test_gui.py  (class EPD_1in54)
 #
-# Only the demo main() block was removed. The LUT waveform tables and the
+# Changes from the vendor original:
+#   1. The demo main() block was removed.
+#   2. init() now powers the panel back on -- see the DEVIATION comment there.
+#      Without it, only the first refresh after boot reaches the glass.
+#
+# The LUT waveform tables and the
 # SSD1681 init sequence are panel-specific magic numbers -- do not "clean them
 # up". Pin constants here are duplicated from board.py by the vendor's layout;
 # board.py is the reference.
@@ -239,6 +244,18 @@ class EPD_1in54(framebuf.FrameBuffer):
 
     def init(self, update):
         print('Initializing e-Paper...')
+        # ---- DEVIATION FROM VENDOR CODE ----------------------------------
+        # Power the panel back on. sleep() -> module_exit() drives PWR high
+        # (off), and the vendor's init() never restores it: their demo sleeps
+        # once at the very end, so it never wakes a sleeping panel.
+        #
+        # Without this, every refresh after the first succeeds in software --
+        # SPI data goes out, ReadBusy returns immediately because an unpowered
+        # panel never asserts BUSY -- while the image on screen never changes.
+        # The symptom is "it updated once and then stopped".
+        self.digital_write(self.pwr_pin, 0)
+        self.delay_ms(10)  # let the panel rail come up before the reset pulse
+        # ------------------------------------------------------------------
         self.reset()
         if update == self.full_update:
             self.ReadBusy()

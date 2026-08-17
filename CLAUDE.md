@@ -15,6 +15,14 @@ duplicate what the display already does for free.
 
 Deploy with `./tools/deploy.sh`; `main.py` autoruns at power-on.
 
+## Verifying display and audio changes
+
+`display()` completes normally against an **unpowered** panel — SPI writes land
+and `ReadBusy` returns instantly — so "no exception raised" proves nothing about
+what reached the glass. Check that BUSY was asserted (a real full refresh holds
+it ~1290 ms) or that PWR (GP13) is 0, or get a human to look. The same applies to
+audio. This exact gap shipped a bug that made the display update only once.
+
 ## Audio is optional and must stay optional
 
 `shake.py` swallows its own exceptions and sets `available = False` on failure.
