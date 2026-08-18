@@ -134,6 +134,18 @@ on all twelve negatives** — including the near-rime attackers *other*,
 *another*, *wonder*, *mothers*, *brothers* that set the DTW threshold, and the
 retired *know*, *want*, *need*. Zero false fires of either kind.
 
+**Evaluate against keywords and negatives together, or the number flatters.**
+Pointing `--takes` at the ten keywords alone finds a "better" operating point —
+threshold 0.469 at recall 0.700, apparently also with precision 1.000. It is
+the same model on a test that omits the question: with no negatives present,
+nothing can fire on an ordinary word, so a lower threshold survives. Restore
+the twelve negatives at that threshold and one of them fires; precision is
+0.875, not 1.000.
+
+The tell is that the flattering result comes with a **lower** threshold. A
+better model clears a higher bar; a weaker test lowers the bar. **0.500 at
+threshold 0.598 is the number to quote.**
+
 **The synthetic and real precision figures are not comparable, and the
 difference is not the speaker.** The synthetic set has 1386 must-stay-silent
 utterances chosen adversarially against 621 keywords; the real set has 12 against

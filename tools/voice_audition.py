@@ -388,6 +388,7 @@ def corpus_lines():
     nouns = [w.lower() for w in vocab.NOUNS]
     feelings = [w.lower() for w in vocab.FEELINGS]
 
+    canned = list(canned)
     whole, pieces, medial = list(canned), [], []
 
     def expand(text, fill):

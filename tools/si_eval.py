@@ -393,7 +393,12 @@ def main(argv):
                          "(float, for the comparison)")
     ap.add_argument("manifest", help="the synthetic corpus manifest")
     ap.add_argument("--takes", default=None,
-                    help="directory of real enrolment recordings")
+                    help="directory of real enrolment recordings. Point this "
+                         "at keywords AND negatives together -- a "
+                         "keywords-only directory cannot see a fire on an "
+                         "ordinary word, which is the failure this project "
+                         "cares about, and reports a flatteringly low "
+                         "threshold as a result")
     ap.add_argument("--cache", default=None)
     ap.add_argument("--jobs", type=int, default=None)
     ap.add_argument("--split", default="val",
@@ -448,8 +453,18 @@ def main(argv):
             acc_r, hit_r, n_r = top1_accuracy(real)
             print("top-1 over in-vocabulary utterances: %.3f (%d of %d)"
                   % (acc_r, hit_r, n_r))
+            # Signed, and named in the direction it actually went. An earlier
+            # version said "points lost" unconditionally and printed
+            # "-7.4 points lost" when real speech had *out*performed the
+            # held-out synthetic voices -- which states the project's central
+            # result backwards to anyone reading the output rather than the
+            # doc.
+            delta = 100 * (acc_r - acc)
             print("the gap that is the result: %.3f synthetic -> %.3f real, "
-                  "%.1f points lost" % (acc, acc_r, 100 * (acc - acc_r)))
+                  "%+.1f points (%s)"
+                  % (acc, acc_r, delta,
+                     "real speech did better" if delta > 0 else
+                     "real speech did worse" if delta < 0 else "no change"))
             print_sweep(real, "threshold sweep, real speaker")
             clean, _ = recommend(real)
             if clean:

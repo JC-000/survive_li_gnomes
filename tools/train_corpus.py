@@ -556,8 +556,12 @@ def index_existing(root, roster, quarantine=True):
     stale_dir = os.path.join(root, "_stale")
     records = []
     stale = []
+    moved = []
     unknown_voice = []
 
+    # Two passes: relocate first, then index. A voice moved into `train` on the
+    # first pass must be indexed at its new home, and a single pass walking the
+    # tree while renaming inside it would either miss it or find it twice.
     for split in ("train", "val", "test"):
         base = os.path.join(root, split)
         if not os.path.isdir(base):
@@ -577,11 +581,25 @@ def index_existing(root, roster, quarantine=True):
                     continue
                 v = by_name[voice]
                 if v["split"] != split:
-                    stale.append((split, cat, voice, v["split"], len(files)))
+                    # **Relocated, not discarded.** `build_voice` uses the
+                    # split only to choose a path -- the samples, the rates and
+                    # the augmentation draws all depend on the voice alone -- so
+                    # audio in the wrong split directory is correct audio that
+                    # has been filed wrongly, and re-rendering it would be an
+                    # hour spent reproducing bytes we already have. A roster
+                    # rebuild moves most voices, so this is the common case,
+                    # not the exceptional one.
+                    moved.append((split, cat, voice, v["split"], len(files)))
+                    dest = os.path.join(root, v["split"], cat, vslug)
                     if quarantine:
-                        dest = os.path.join(stale_dir, split, cat, vslug)
                         os.makedirs(os.path.dirname(dest), exist_ok=True)
-                        os.rename(vdir, dest)
+                        if os.path.isdir(dest):
+                            for name in files:
+                                os.replace(os.path.join(vdir, name),
+                                           os.path.join(dest, name))
+                            os.rmdir(vdir)
+                        else:
+                            os.rename(vdir, dest)
                     continue
                 for name in files:
                     path = os.path.join(vdir, name)
@@ -617,7 +635,12 @@ def index_existing(root, roster, quarantine=True):
                                         else round(len(seg) * 1000.0 / RATE)),
                         "indexed": True,
                     })
-    return records, stale, unknown_voice
+    if moved and quarantine:
+        # Re-walk now that everything sits where the roster says it should.
+        again, stale2, orphan2, _ = index_existing(root, roster,
+                                                    quarantine=False)
+        return again, stale + stale2, unknown_voice + orphan2, moved
+    return records, stale, unknown_voice, moved
 
 
 def main(argv=None):
@@ -657,8 +680,11 @@ def main(argv=None):
             sys.exit("none of those voices are in the roster")
 
     if args.index:
-        records, stale, orphan = index_existing(
+        records, stale, orphan, moved = index_existing(
             args.root, roster, quarantine=not args.keep_stale)
+        for split, cat, voice, want, n in moved:
+            print("MOVED: %s/%s/%s -> %s -- %d file(s), roster changed"
+                  % (split, cat, voice, want, n), file=sys.stderr)
         for split, cat, voice, want, n in stale:
             print("STALE: %s/%s/%s belongs in %s -- %d file(s) %s"
                   % (split, cat, voice, want, n,
