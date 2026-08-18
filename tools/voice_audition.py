@@ -170,35 +170,42 @@ PRESETS = (
 
 # Voices.
 #
-# The `(Enhanced)` suffix is load-bearing: `Samantha` and `Samantha (Enhanced)`
-# are both installed here and are different voices (170.9 Hz vs 180.7 Hz, and
-# they do not share an MD5). Ask for the bare name and you get the compact one,
-# which is the tier this exercise exists to avoid. `say -v` also renders an
-# *uninstalled* name in the system default and exits 0, so `check_distinct`
+# The quality suffix is load-bearing. `Samantha` and `Samantha (Enhanced)` are
+# both installed here and are different voices (170.9 Hz vs 180.7 Hz, different
+# MD5s); ask for the bare name and you get the compact one, which is the tier
+# this whole exercise exists to avoid. And `say -v` renders an *uninstalled*
+# name in the system default and exits 0 -- `Zoe` is not installed on this Mac
+# and comes back byte-identical to Samantha (Enhanced) -- so `check_distinct`
 # runs before anything else.
 #
-# Susan carries the prosody sweep because it has the lowest natural pitch of
-# any female voice installed -- measured on "Tell me more about your family",
-# no markup:
+# Natural pitch, no markup, "Tell me more about your family":
 #
-#     Susan (Enhanced)    162.1 Hz      Joelle (Enhanced)    237.1 Hz
-#     Samantha (Enhanced) 180.7 Hz      Noelle (Enhanced)    268.9 Hz
-#     Allison (Enhanced)  200.5 Hz      (Nathan, male        107.0 Hz)
+#     Susan (Enhanced)    162.1 Hz      Samantha (Enhanced)  180.7 Hz
+#     Nicky (Enhanced)    165.8 Hz      Allison (Enhanced)   200.5 Hz
+#     Ava (Premium)       172.3 Hz      Joelle (Enhanced)    237.1 Hz
+#                                       Noelle (Enhanced)    268.9 Hz
 #
-# That matters because [[pbas]] is the control that costs naturalness -- it
-# shifts pitch without moving the formants with it, so the further a voice is
-# dragged the more it stops sounding like a woman speaking low and starts
-# sounding like a recording slowed down. A voice that starts in the target
-# register needs the least of it. This is a stated criterion, not a verdict:
-# every candidate also appears at p3-warm so it can be overruled by ear.
-PRIMARY = "Susan (Enhanced)"
+# Ava carries the prosody sweep on two counts. It is the only Premium voice
+# installed, a tier above every other candidate; and at 172 Hz it already sits
+# in the lower half of the range, which matters because [[pbas]] is the control
+# that costs naturalness -- it moves the pitch without moving the formants with
+# it, so the further a voice is dragged the less it sounds like a woman
+# speaking low and the more it sounds like a recording slowed down.
+#
+# Susan and Nicky start lower still but are only Enhanced, and Joelle and
+# Noelle are dropped from the shortlist because 237 and 269 Hz are too far
+# above the target to reach without exactly that damage. Both are stated
+# criteria rather than verdicts: every remaining candidate appears at p3-warm
+# so the ranking can be overruled by ear, which is the only instrument that
+# actually settles this.
+PRIMARY = "Ava (Premium)"
 SHORTLIST = (
     (PRIMARY, ("p0-neutral", "p1-lower", "p2-slow", "p3-light", "p3-warm",
                "p4-darker", "p5-intimate")),
-    ("Allison (Enhanced)", ("p0-neutral", "p3-warm")),
+    ("Susan (Enhanced)", ("p0-neutral", "p3-warm")),
+    ("Nicky (Enhanced)", ("p3-warm",)),
     ("Samantha (Enhanced)", ("p3-warm",)),
-    ("Joelle (Enhanced)", ("p3-warm",)),
-    ("Noelle (Enhanced)", ("p3-warm",)),
+    ("Allison (Enhanced)", ("p3-warm",)),
     ("Moira", ("p3-warm",)),       # en_IE, for an accent that is not American
 )
 

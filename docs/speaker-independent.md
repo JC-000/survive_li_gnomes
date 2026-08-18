@@ -37,6 +37,14 @@ unknown. It worked, on the one speaker it has been tried on.
 > synthetically-trained model recognise a real person at all" — which was the
 > question — and nothing finer.
 >
+> **The operating point does not transfer to the device as measured.** These
+> gates were tuned against the `.tflite`; the board runs a `.tmdl` through
+> TinyMaix, whose arithmetic is an independent reimplementation and gives
+> different probabilities. Top-1 differed on **3 of 8** patches. The top-1 row
+> above is unaffected in kind, but the threshold behind the 0.500 has to be
+> re-tuned against TinyMaix arithmetic before it means anything on hardware —
+> see [Tuning against the wrong model](#tuning-against-the-wrong-model).
+>
 
 ## Start here — what to run, in order
 
@@ -116,6 +124,47 @@ precision and recall separately because a single accuracy figure averages
 together the one error that matters and the one that does not. This is that
 argument turning into a number. Two systems, the same accuracy, opposite
 verdicts.
+
+## Tuning against the wrong model
+
+**A `.tmdl` is not numerically the `.tflite` it was converted from.** Measured
+on the board by si-device, over the eight sample patches: **top-1 differs on
+three of eight**, and where it differs the device is systematically *more*
+confident. Patch 0 goes from class 18 at p=0.566 on the host to class 21 at
+p=0.949 on the device.
+
+This is **not** a port bug and not specific to this model. The same comparison
+against emlearn's own MNIST model — where the right answers are known
+independently — also diverges, by up to 0.047 in probability. MNIST's argmax
+survives because its margins are around 0.9. Ours do not, because ours run 0.00
+to 0.38. TinyMaix requantises in float and casts; TFLite uses fixed-point
+rounding multipliers with saturation. Different arithmetic, different numbers.
+
+**So every threshold and margin in this document was tuned against a model that
+is not the one that ships.** That is the same shape as the cross-microphone
+problem `docs/speech.md` is built around: evaluating one thing and deploying
+another, with nothing in between to say they disagree.
+
+What it does and does not invalidate:
+
+- **Top-1 comparisons stand.** DTW against CNN, real speaker against synthetic
+  voices, the per-voice accent table — all are relative measures on the same
+  arithmetic, and the divergence is not large enough to reorder them.
+- **The operating point does not.** Precision 1.000 at recall 0.500, threshold
+  0.598, is a property of the `.tflite`. It has to be re-derived.
+
+The bias is at least in the safe direction — on all three disagreements the
+device moved **toward `unknown`**, which for this toy means more deflections and
+fewer confident misfires, exactly the trade `docs/speech-design.md` asks for.
+But that is eight patches from a dry-run model. It is a hope, not a measurement.
+
+**The fix, and it unblocks all host-side evaluation:** build TinyMaix for the
+host from the same sources emlearn vendors (`TM_ARCH_CPU`, `TM_OPT0`,
+`TM_MDL_TYPE = TM_MDL_INT8`, `TM_FASTSCALE 0` — the configuration in emlearn's
+`src/tinymaix_cnn/int8/tm_port.h`), and sweep the gates against that. A couple
+of hours of C build work. Failing that, sweep on the board: at 66.6 ms per
+inference a 500-utterance sweep is about 35 seconds of board time per operating
+point.
 
 ## The endpointer looked broken, and was being fed a chirp
 
@@ -646,7 +695,33 @@ would load, run, and be quietly wrong.
 `si_train.to_int8_tflite` now reads the quantisation back and **raises** unless
 it is 1.0 / 0.
 
-## The device path, verified on the host
+## The device path — it runs
+
+**Measured on the board by si-device.** `emlearn_cnn_int8` imports on
+`armv7emsp` (12096 B of heap), emlearn's MNIST model classifies 10/10 digits,
+and **`si_real` runs at 66.6 ms per inference** — 1.106 MMAC at 9.03
+cycles/MAC. Against DTW's 616-672 ms of matching that is **about 10x cheaper
+than the matcher it replaces**, and flat in class count where DTW is linear in
+template count.
+
+Memory is a non-issue: 43536 B resident, 64624 B peak, and with the capture
+buffer, ELIZA rules, framebuffer *and* the 137 KB DTW template set all held at
+once there is still 174 KB free and a 102 KB largest block, with no measurable
+slowdown (3218 us under full load against 3205 us on an empty heap).
+
+**The padding was necessary and is now proved, with a control.** Loading the
+unpadded `.tmdl` and filling the rest of the heap with a pattern, one inference
+**overwrote 1164 bytes outside its allocation and raised nothing.** The padded
+file, same script, same input: **0 bytes.**
+
+Two device-side facts worth carrying: the wrapper rejects `bytearray` and needs
+`array.array('B', ...)`, which costs **2.06x** the bytes it holds because
+MicroPython grows arrays by doubling — that is where the peak comes from. And
+measure with `gc.mem_alloc()`, not `gc.mem_free()`: a `mem_free` delta
+over-reported this model's resident cost by 97%, because free-list
+fragmentation is not resident use.
+
+### What was verified on the host
 
 Keras -> int8 `.tflite` -> `.tmdl`, all *verified* by running it. Findings that
 constrain the model, from si-device's reading of the runtime and from
@@ -706,43 +781,44 @@ cd TinyMaix && python -m tools.tflite2tmdl in.tflite out.tmdl int8 1 80,26,1 22
 - **What the model does with more than 4 training voices.** Only the natural
   tier was generated; the 16-voice expressive family is unrendered. This is the
   largest untested lever.
-- **Whether `emlearn_cnn_int8` imports on this board.** *unknown* — si-device
-  owns it and had no board time. The prebuilt `.mpy` decodes to mpy 6.3 /
-  `armv7emsp` / 31-bit small ints, which matches this board on all three, so the
-  ABI question is settled in our favour; whether the ARM code links and computes
-  correctly is not. A clean import is not proof either — a native module can
-  import and still generate wrong code, so the probe classifies emlearn's ten
-  shipped MNIST digits, and real input patches with host predictions in their
-  filenames prove it on *this* topology.
-- **Inference time on the device.** *unknown*. si-device predicts 25-50 ms on
-  TinyMaix and 225-450 ms on a viper fallback, against DTW's measured 616-672 ms
-  of matching.
-- **Whether TinyMaix's unclamped int8 layer outputs wrap on real device
-  features.** Its `tm_postprocess_sum` has a bare C cast where TFLite clamps, so
-  a representative set calibrated on clean synthetic features could let real
-  ones wrap into confident nonsense. A host-side counter for this is not built.
+- ~~Whether `emlearn_cnn_int8` imports on this board.~~ **Answered: it does,
+  and `si_real` runs at 66.6 ms per inference.** See
+  [The device path](#the-device-path--it-runs).
+- **How far TinyMaix's arithmetic moves the operating point.** Top-1 differs on
+  3 of 8 patches against the host `.tflite`, always toward `unknown`. Whether
+  that costs recall, buys precision, or roughly cancels is unmeasured, and it is
+  the single biggest open question about the headline number.
+- **Whether TinyMaix's unclamped int8 outputs explain that divergence.** Its
+  `tm_postprocess_sum` casts where TFLite saturates; a host-side counter of how
+  often the pre-cast value leaves [-128, 127] would say. Not built, and now
+  more interesting than when it was first raised.
 
 ## Resuming — the rest of the list
 
 [Start here](#start-here--what-to-run-in-order) has the commands and the first
 priority. The remainder, in order of value:
 
-2. **Generate the rest of the corpus.** Only the natural tier was ever built.
+2. **Build TinyMaix for the host and re-tune the gates against it.** Until that
+   exists, every threshold here is tuned on arithmetic the device does not run
+   — see [Tuning against the wrong model](#tuning-against-the-wrong-model). It
+   is a couple of hours of C and it unblocks all host-side evaluation; without
+   it the gates have to be swept on the board at 66.6 ms an inference.
+3. **Generate the rest of the corpus.** Only the natural tier was ever built.
    The 16-voice expressive family and the novelty tier are ~2 hours more, and
    the model that produced the headline trained on **4 voices**. More training
    voices is the largest untested lever.
-3. **Retrain on the rebuilt roster and re-run the evaluation.** The split now
+4. **Retrain on the rebuilt roster and re-run the evaluation.** The split now
    holds an American voice of each gender in **test** (Allison, Nathan, both
    Enhanced), so generalisation to an unseen American speaker becomes measured
    rather than assumed. The CNN numbers in this document predate that split and
    are labelled as such.
-4. **Get the model onto the board.** `build/si_real.tflite` converts; run
+5. **Get the model onto the board.** `build/si_real.tflite` converts; run
    `tools/tmdl_info.py --pad` and hand it over with a handful of `uint8`
    patches. Whether `emlearn_cnn_int8` imports at all is still unanswered.
-5. **Then tune for precision.** Sweep `--unknown-weight`, `--width` and
+6. **Then tune for precision.** Sweep `--unknown-weight`, `--width` and
    `--arch`. The operating point matters more than the accuracy and none of
    these has been swept once against the real corpus.
-6. **Add clipping to the channel model.** This microphone no longer saturates
+7. **Add clipping to the channel model.** This microphone no longer saturates
    at `MIC_GAIN = 1`, but a louder or closer speaker will, and the corpus has
    no example of saturation.
 

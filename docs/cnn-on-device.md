@@ -4,17 +4,27 @@ What can actually execute on the RP2350, for the speaker-independent recogniser.
 Companion to [speaker-independent.md](speaker-independent.md), which owns the
 model and the corpus; this file owns the runtime.
 
-> ## Nothing in this document has run on the board
+> ## Measured on the board, 2026-08-18
 >
-> Not one line. The hardware was in use for the whole session and was never
-> handed over, so **every figure here is either read out of source code or
-> predicted from a cost model.** Where something is measured, it was measured on
-> the host or is quoted from an earlier session and labelled as such.
+> **`emlearn_cnn_int8` imports, loads and computes correctly on this board.**
+> The central unknown is closed. Every figure below marked *measured* came off
+> the hardware in that session; the predictions this document previously carried
+> are kept next to them, because two of them were wrong by enough to matter.
 >
-> That matters more than usual, because the central claim — that
-> `emlearn_cnn_int8` loads and runs on `armv7emsp` — is precisely the sort of
-> thing that source reading cannot settle. Treat "Ready to run" below as a plan,
-> not a result.
+> **Verified on hardware** (`/dev/cu.usbmodem1401`): the import; correct
+> classification of emlearn's ten MNIST digits; inference time for that model
+> and for `si_real`; RAM at import, peak and rest; coexistence with the capture
+> buffer, rules, framebuffer and DTW templates; the viper fallback's throughput
+> and its int32 bound at the algebraic worst case; the scratch-buffer overrun,
+> with a control; that `bytearray` is rejected as model input; and that the
+> device disagrees with host TFLite on 3 of 8 keyword patches.
+>
+> **Still analysis, not measured**: the operating point (threshold and margin)
+> under TinyMaix arithmetic; whether the divergence comes from the unclamped
+> int8 outputs or from the requant rounding; the front end feeding the CNN on
+> the device; depthwise cost in the viper fallback; and every figure for the
+> `dscnn 2.0` / `plain` candidates, which were never built as `.tmdl` and are
+> scaled from the measured 9 cycles/MAC.
 
 ## Already established — do not re-derive
 
@@ -118,10 +128,74 @@ unconditionally — class scores come back as reinterpreted bytes.
 **4. TinyMaix never clamps its int8 layer outputs.** `tm_postprocess_sum` ends
 with a bare C cast where TFLite's reference saturates to [-128, 127]. So
 quantisation ranges calibrated on the wrong distribution **wrap** rather than
-saturate. This one is *not* statically checkable and remains open: it needs a
-host-side counter of how often `|sumf*out_s_inv + out_zp| > 127` over a
-representative set. It matters here because the representative set is clean
-synthetic features and the device will feed it something else.
+saturate. Not statically checkable, and still open: it needs a host-side counter
+of how often `|sumf*out_s_inv + out_zp| > 127` over a representative set.
+
+This is one candidate explanation for the divergence measured below, though not
+the only one, and it has not been isolated.
+
+## A `.tmdl` is not numerically the `.tflite` it came from
+
+**The most important thing this session measured, and it was not on anyone's
+list.** TinyMaix is an independent reimplementation, not a TFLite runtime: it
+requantises in float and casts, where TFLite uses fixed-point rounding
+multipliers with saturation. Those are different arithmetic, and the outputs
+differ.
+
+Measured on emlearn's own MNIST model, host TFLite against this board:
+
+| digit | host p | device p | delta |
+| --- | --- | --- | --- |
+| 0, 1, 3, 8 | 0.9961 | 0.9960 | -0.0001 |
+| 2 | 0.9453 | 0.9610 | **+0.0157** |
+| 4 | 0.8906 | 0.8440 | **-0.0466** |
+| 5 | 0.9141 | 0.8870 | -0.0271 |
+| 7 | 0.9727 | 0.9570 | -0.0157 |
+| 9 | 0.9531 | 0.9410 | -0.0121 |
+
+Argmax survives all ten, because MNIST's margins are enormous. **`si_real`'s are
+not.** On the eight keyword patches, top-1 differed from the host TFLite on
+**three of eight** — and the device was systematically more confident in the
+`unknown` class:
+
+| patch | host top1 / p | device top1 / p |
+| --- | --- | --- |
+| 0 | **18** / 0.5664 | **21** / 0.9492 |
+| 6 | 21 / 0.5000 (margin 0.0000) | 21 / 0.6875 |
+| 7 | **11** / 0.5078 | **21** / 0.6445 |
+
+**Consequence: `si-model`'s operating point does not transfer.** Precision 1.000
+at recall 0.500 was measured on the `.tflite`. The threshold and margin gates
+that replace DTW's `THRESHOLD` and `MARGIN` must be tuned on **the `.tmdl`, on
+the device** — or on a host build of TinyMaix, which does not currently exist in
+this project. Evaluating on TFLite and shipping the `.tmdl` is measuring one
+thing and deploying another.
+
+The bias direction is at least the safe one for this toy: more `unknown` means
+more deflections and fewer confident misfires, which is what `docs/speech.md`
+argues to optimise for. But it is unmeasured, on eight patches from a model
+whose corpus was still generating.
+
+### Which comparisons survive this, and one that does not
+
+Comparisons *within* the CNN — architecture against architecture, real speaker
+against synthetic, voice against voice — are relative measures taken under the
+same arithmetic on both sides, so a systematic bias largely cancels and the
+ranking should hold.
+
+**The CNN-against-DTW comparison is the exception, and it is the one the whole
+project rests on.** Only one side of it is affected: DTW is unaffected by
+TinyMaix's arithmetic, while the CNN's numbers move. On the three patches that
+disagreed, two flipped from a keyword to `unknown` — the direction that costs
+**recall**. So a CNN recall figure measured on the `.tflite` is an **upper
+bound** on what the device will do, and setting it beside DTW's measured recall
+flatters the CNN by an unknown margin.
+
+That does not overturn the case for the CNN — 66.6 ms against 616-672 ms is not
+a margin arithmetic drift can close, and speaker independence is the reason for
+doing this at all. It means the *accuracy* half of the comparison has to be
+re-measured under TinyMaix before it is quoted against DTW, and the *cost* half
+already has been.
 
 ## Memory cost
 
@@ -129,33 +203,89 @@ synthetic features and the device will feed it something else.
     peak     = 3 x file_size during new()        the caller's array('B') is alive too
     plus     ~12 KB at import                    5.5 KB code + sbuf 2304 + sumscale 4000 + k_oft 100
 
-For the delivered `si_dscnn_w1.tmdl` (21120 B, already padded): **42240 B
-resident, 63360 B peak.** Against 489 KB contiguous, with the 94 KB capture
-buffer, ~37 KB of ELIZA rules and the 5 KB framebuffer, memory is nowhere near
-binding — even with the 137 KB DTW template set still resident as the fallback.
+**Measured** for `si_real.tmdl` (21120 B, padded), by `gc.mem_alloc()` deltas:
 
-(Note: 31552 / 47328 are the figures for the *unpadded* 15776-byte file. Padding
-is what makes it safe, and padding is what doubles into the resident cost.)
+| | measured | formula |
+| --- | --- | --- |
+| module import | **12096 B** | ~12 KB predicted |
+| caller's `array('B')` of the file | **43472 B** | 2.06x the file — see below |
+| peak during `new()` | **64624 B** | 3.06x the file |
+| resident after dropping the array | **43536 B** | 2.06x the file |
 
-## Predicted inference cost
+The 2x and 3x formulas are right. **Use `gc.mem_alloc()` and not
+`gc.mem_free()`** — a `mem_free` delta read 85824 B resident for the same model,
+because free-list fragmentation from building the array is not resident use.
+That over-reported the cost by 97%.
 
-**Predicted, not measured.** TinyMaix: ~3.5 cycles/MAC for the generic C
-`tm_dot_prod`, plus ~20 cycles per output element for the float requant. Viper:
-~36 cycles/MAC and ~65 cycles/output, anchored on this project's own two
-measurements, which both work out at ~8 cycles per viper statement — the
-512-point FFT at 218 cycles/butterfly over ~26 statements, and the DTW band cell
-at 7.53 us over 144.
+The surprise is the caller's own array: `array.array('B', blob)` costs **2.06x**
+the bytes it holds, because MicroPython grows the array by doubling. It cannot
+be avoided — `bytearray` is **rejected** by the wrapper with
+`ValueError: model should be bytes`, since `mp_get_buffer` does not report
+typecode `'B'` for it. Verified on the board.
 
-| model | MMAC | output elems | TinyMaix | viper |
-| --- | --- | --- | --- | --- |
-| **dscnn 1.0** (delivered) | 1.106 | 45142 | **~32 ms** | **~285 ms** |
-| dscnn 2.0 | 3.359 | 90262 | ~90 ms | ~845 ms |
-| plain 1.0 | 2.237 | 16662 | ~54 ms | ~544 ms |
-| plain 2.0 | 8.528 | 33302 | ~203 ms | ~2061 ms |
+Total with the model resident: **~55.6 KB**. Nowhere near binding.
 
-Break-even against DTW is ~600 ms; ~200 ms is a clear win. **On TinyMaix every
-candidate wins comfortably.** On the viper fallback, `dscnn 1.0` at ~285 ms is
-the only one that wins clearly.
+### Coexistence, measured
+
+Everything held at once, on the board:
+
+| held | free | largest contiguous |
+| --- | --- | --- |
+| nothing (clean boot) | 492672 | ~489 KB |
+| + 94 KB capture buffer | 261840 | |
+| + 37 KB ELIZA rules | 223936 | |
+| + 5 KB framebuffer | 218912 | 165408 |
+| + 137 KB DTW templates | 174112 | 101936 |
+
+**Inference under that full load: 3218 us against 3205 us on an empty heap** —
+no measurable penalty. The CNN, the capture buffer, the rules, the framebuffer
+and the DTW fallback all fit together with ~170 KB spare.
+
+## Inference cost — measured
+
+| | MACs | measured | cycles/MAC |
+| --- | --- | --- | --- |
+| MNIST (emlearn's own) | 51228 | **3205 us** | 9.38 |
+| **`si_real` dscnn w1.0** | 1106048 | **66604 us — 66.6 ms** | 9.03 |
+
+So TinyMaix costs **~9 cycles/MAC**, against the ~3.5 predicted from reading
+`tm_dot_prod`. The prediction counted the multiply-accumulate and not the
+`sbuf` im2col gather that precedes every output pixel, nor the per-channel
+`sumscale` setup. **Predictions of this kind were 2.6x optimistic; use 9.**
+
+Even so the conclusion is unchanged and large: **66.6 ms against DTW's
+616-672 ms of matching.** The CNN is about **10x cheaper than the matcher it
+replaces**, and it is flat in class count where DTW is linear in template count.
+A turn goes from ~889 ms to ~340 ms, and the front end becomes the dominant
+cost.
+
+Scaling the other candidates at 9 cycles/MAC: `dscnn` 2.0 ~202 ms, `plain` 1.0
+~134 ms, `plain` 2.0 ~512 ms. All still inside break-even on TinyMaix.
+
+### The viper fallback, measured
+
+| | measured | predicted |
+| --- | --- | --- |
+| `uint8` dot product, plain loop | **41.0 cycles/MAC** | 40 |
+| same, 4x unrolled | **31.2 cycles/MAC** | 32 |
+| **whole conv layers, gather + MAC + requant** | **62.1 cycles/MAC** | 36 |
+
+The isolated inner loop matched prediction almost exactly — the ~8-cycles-per-
+viper-statement model this project already had is sound. The **whole-layer**
+figure did not: 62.1 against 36, because the conv inner loop carries two extra
+address additions per iteration that the isolated dot product does not, and
+because the patch-sum pass and requant scaffolding cost more than allowed for.
+
+At 62.1 cycles/MAC the fallback would run `si_real` in **458 ms** — still inside
+DTW's 616 ms, but with a third of the headroom the earlier estimate suggested,
+and `plain` 1.0 would land at ~926 ms and **miss break-even entirely**. If the
+fallback is ever needed, `dscnn` is the only candidate that fits it.
+
+**The int32 bound held exactly.** Section 4 drove the accumulator to its
+algebraic worst case on the device: `peak |acc>>r|` came back 36864 and 49152,
+matching the host algebra to the unit, so viper did not wrap where CPython could
+not have shown it. Requant products peaked at 28.12% and 37.50% of int32,
+against the 50.00% the Q14 design allows.
 
 **Output-element count is real but secondary at these ratios.** It was worth
 adding to the cost model — it is a fixed per-element charge that MAC counts miss
@@ -205,7 +335,27 @@ The host cannot prove the *port*, because viper wraps at int32 silently while
 CPython and MicroPython bytecode both carry unbounded ints. Section 4 of the
 probe drives the same worst case on the device for that reason.
 
-## Ready to run: the ordered board session
+## The board session, as run
+
+Executed 2026-08-18 on `/dev/cu.usbmodem1401`. **Result: sections 0-6 all ran;
+`emlearn_cnn_int8` imports, loads and classifies correctly.** The board was left
+on the Magic 8-Ball with every test file removed and its file list identical to
+how it was found.
+
+| # | question | result |
+| --- | --- | --- |
+| 0 | build identity | MicroPython 1.28.0, mpy 6.3, arch 7 = `armv7emsp`, 492480 B free — all as expected |
+| 1 | **does it import** | **yes**, 12096 B of heap |
+| 2 | does it load a model | yes, both emlearn's MNIST and `si_real` |
+| 3 | **do the ten digits classify correctly** | **10/10**, 3205 us each |
+| 3b | `si_real` on eight patches | runs, 66.6 ms each; **top-1 differs from host TFLite on 3 of 8** — see the divergence section |
+| 4 | viper fallback + int32 bound | 62.1 cycles/MAC end to end; bound held exactly (36864, 49152) |
+| 5 | coexistence | everything fits, no slowdown under load |
+| 6 | scratch-buffer overrun canary | **confirmed: 1164 bytes overwritten unpadded, 0 padded** |
+
+What remains unknown is listed at the end of this document.
+
+### The sequence, for next time
 
 One pass, cheapest and most decisive first, each step gating the next.
 `tools/cnn_probe.py` is that sequence. It touches no peripheral — no panel, no
@@ -236,10 +386,9 @@ renamed file is obviously wrong rather than quietly mismatched. Two of the eight
 are deliberately marginal (top-1 probability 0.125, margins 0.027 and 0.039) —
 those are where an arithmetic fault shows first.
 
-**If section 1 fails, that is a result, not a dead end**, and section 4 gives the
-number that says how large a model the fallback can carry. Report it upstream
-either way; it is worth an issue on emlearn-micropython, whose README claims
-testing on x64 and xtensawin only.
+Section 1 did not fail. **`armv7emsp` works, and emlearn-micropython's README
+claims testing only on x64 and xtensawin — that is worth telling them**, since
+this board is now a data point they do not have.
 
 ### Staging
 
@@ -311,3 +460,29 @@ the one error that matters and the one that does not.
 
 Nothing about this has been measured. It is the largest open question after the
 import.
+
+
+## What is still unknown
+
+Closed this session: the import, the arithmetic, RAM, inference time, and the
+scratch-buffer overrun.
+
+Still open, in the order they matter:
+
+1. **The operating point.** `si-model`'s precision 1.000 at recall 0.500 was
+   measured on the `.tflite`, and the `.tmdl` does not compute the same numbers.
+   Nothing is known about the threshold and margin gates on the device. This is
+   now the largest open question and it did not exist before this session.
+2. **Rejection.** Even with the gates tuned, whether a 22-class softmax can hold
+   precision at 1.000 the way the DTW threshold-plus-margin pair does is
+   unmeasured. `docs/speech.md` argues why precision is the metric that matters.
+3. **Real speech end to end.** The front end has never fed the CNN on the
+   device. Everything measured here used patches computed on the host.
+4. **The unclamped-output counter**, item 4 above. It is one candidate
+   explanation for the divergence and has not been isolated from the others.
+5. **Whether the divergence is TinyMaix-generic or model-specific.** Ruling on
+   this needs a host build of TinyMaix to compare against, which would also give
+   `si-model` somewhere to tune the gates without holding the board.
+6. **Depthwise cost in viper**, if the fallback is ever needed — a depthwise 3x3
+   has a 3-element contiguous inner run and will do worse than the 62.1
+   cycles/MAC measured on dense convolutions.
