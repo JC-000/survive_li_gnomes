@@ -80,6 +80,54 @@ the DMA engine feeds the codec while the CPU drives SPI, so `shaker.start()`
 before the refresh and `shaker.finish()` after it overlaps the two. Press time
 dropped from ~3.1 s to ~1.6 s as a side effect.
 
+### Alternate sounds
+
+Most presses shake. Occasionally the clip is swapped for a fart or a sigh
+(`sounds.fart` / `sounds.sigh`). The policy lives in `shake.py`:
+
+| Constant | Value | Effect |
+| --- | --- | --- |
+| `ALTERNATE_MIN_GAP` | 5 | at least five ordinary shakes between alternates |
+| `ALTERNATE_ONE_IN` | 3 | then a 1-in-3 roll per press |
+
+Simulated over 200 000 presses: minimum gap 6, mean 8, ~12.5% of presses, split
+evenly between the two. For "guaranteed at least once every N" instead of "never
+more often than every N", set `ALTERNATE_ONE_IN = 1`.
+
+**The sigh is synthesised, and it is not a recording of a person.** It is a
+sawtooth excitation through two resonators tuned to the first two formants of an
+open vowel, with breath noise rising through it. That reads as a breathy vocal
+*"aahh"* rather than as a specific human being. A convincing woman's sigh needs
+real vocal tract modelling or a real recording — and the board has a working
+microphone if a real one is wanted.
+
+Both alternates are synthesised at 8 kHz and sample-and-held up by 3. They are
+low-frequency sounds, so generating at the full 24 kHz would cost three times as
+long for no audible gain. The hold adds imaging above 4 kHz: inaudible on the
+fart, marginally gritty on the sigh.
+
+### Why the clips are built while idle
+
+Synthesis is slow enough to feel — ~1.0 s for the fart, ~2.0 s for the sigh — so
+`Shaker.prepare_next()` builds one clip per press *after* the answer is on
+screen, and `main` calls it from the idle path. `ALTERNATE_MIN_GAP` guarantees
+both are ready long before either can fire.
+
+### Heap fragmentation: reserve big buffers early, largest first
+
+The three clips are ~213 KB of the ~490 KB heap. Two things bite:
+
+1. MicroPython's heap never compacts, so the free *total* can be comfortable
+   while no single block that large remains.
+2. `array("I", bytearray(n))` holds the bytearray **and** the array at once, so
+   the transient peak is *twice* the final size.
+
+Measured: after generating the shake clip, 419 KB was free and the largest block
+was 174 KB — ample for a 105 KB sigh, and still not enough to build one, because
+building it briefly needs 211 KB. `Shaker._setup` therefore reserves the
+alternates' buffers largest-first and *before* the shake clip, then fills them
+later. Reordering those three lines is the whole fix.
+
 **Audio is strictly optional and must stay that way.** Every entry point in
 `shake.py` swallows its own exceptions and sets `available = False` on failure.
 A silent Magic 8-Ball still works; one that crashes instead of answering does not.

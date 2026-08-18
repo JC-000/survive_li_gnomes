@@ -32,6 +32,10 @@ comes up and the clip is generated.
 Answers are drawn at the largest size they fit: short ones like "Yes" at 24 px,
 most at 16 px.
 
+Every so often the shake is replaced by a fart or a sigh — never more often than
+once every five presses, averaging about one in eight. Tune it via
+`ALTERNATE_MIN_GAP` / `ALTERNATE_ONE_IN` in `src/shake.py`.
+
 A refresh takes a few seconds and flashes the panel black/white. That is normal
 for e-paper, not a fault.
 
@@ -51,7 +55,8 @@ See [docs/design.md](docs/design.md) for why.
 | --- | --- |
 | `src/main.py` | Device entry point — input loop, autoruns at power-on |
 | `src/magic8.py` | The twenty answers, RNG, and screen rendering |
-| `src/shake.py` | Synthesised shake sound; fails soft if audio is unavailable |
+| `src/sounds.py` | Waveform synthesis — shake, fart, sigh. Pure DSP, host-testable |
+| `src/shake.py` | Codec, clip cache, and which sound a press gets |
 | `src/es8311.py`, `src/audio_pio_mpy.py` | Codec + I2S-over-PIO, vendored from Waveshare |
 | `src/board.py` | Pin map + SHTC3, PCF85063A, FT6336U, Battery |
 | `src/epaper.py` | SSD1681 driver, vendored from Waveshare (MIT) |

@@ -129,13 +129,13 @@ def main():
         if inputs.pressed():
             answer = magic8.pick(exclude=last_answer)
             last_answer = answer
-            print("->", answer)
 
-            # Start the shake and let it run *through* the panel refresh rather
+            # Start the sound and let it run *through* the panel refresh rather
             # than before it -- the DMA feeds the codec while the CPU drives SPI,
             # so the sound and the screen changing happen together.
             # Never allowed to raise; a silent ball still works.
-            shaker.start(i2c)
+            sound = shaker.start(i2c)
+            print("->", answer, "[%s]" % (sound or "silent"))
 
             if epd is None:
                 epd = epaper.EPD_1in54()  # constructor also inits
@@ -145,9 +145,13 @@ def main():
             magic8.render(epd, answer, footer="%.2fV" % battery.volts())
             epd.display(epd.buffer)
             epd.sleep()  # never leave the panel biased
-            shaker.finish()  # audio is long done by here; drops the power amp
+            shaker.finish()  # reap the clip if still playing; drops the power amp
 
             inputs.wait_for_release()
+
+            # Build the alternate clips while idle. Synthesis is slow enough to
+            # be felt, and ALTERNATE_MIN_GAP means they are not needed yet.
+            shaker.prepare_next()
 
         time.sleep_ms(POLL_MS)
 
