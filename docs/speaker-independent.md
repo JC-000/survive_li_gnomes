@@ -128,7 +128,8 @@ int8 model, 22 real utterances (10 keywords, 12 negatives):
 | --- | --- | --- | --- |
 | CNN, synthetic held-out voices (2) | 0.626 | 0.013 | 0.013 |
 | **CNN, real speaker** | **0.700** | **0.500** | 0.500 |
-| DTW control, same real speaker | 0.300 | 0.000 | — |
+| DTW control, same real speaker *(best of four rosters)* | 0.700 | 0.000 | — |
+| DTW control, same real speaker *(no American voice, superseded)* | 0.300 | 0.000 | — |
 | DTW control, held-out synthetic voices *(dry-run)* | 0.753 | 0.233 | 0.301 |
 | DTW, same speaker (`docs/speech.md`) | — | 0.966 | — |
 
@@ -222,11 +223,16 @@ so accent is not what is limiting the CNN — and the real speaker's 0.700 sits
 right beside Samantha's 0.668, which is the comparison that matters: an American
 voice, an accent absent from training, scoring the same as the American human.
 
-**n=1 voice per accent.** This rules out accent as the *dominant* effect; it
-does not measure an accent penalty precisely, and it says nothing about DTW,
-whose template distance is far more sensitive to phonetic realisation than a
-convolutional net pooled over time. The DTW control's 0.300 may still be partly
-an accent gap and should be re-run when American voices are in the roster.
+**n=1 voice per accent.** This rules out accent as the *dominant* effect for
+the CNN; it does not measure an accent penalty precisely.
+
+**For DTW it did not rule accent out — and the re-run settled it.** A template
+distance is far more sensitive to phonetic realisation than a convolutional net
+pooled over time, so the 0.300 was suspected of being partly an accent gap. It
+was: with American voices in the roster DTW's top-1 more than doubled, to 0.700.
+Its precision-1.000 recall stayed at 0.000 in every configuration. So accent was
+worth a great deal to DTW's discrimination and nothing at all to the decision --
+the option was never blocked by top-1.
 
 ### What is still true
 

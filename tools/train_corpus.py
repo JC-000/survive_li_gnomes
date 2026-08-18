@@ -577,7 +577,24 @@ def index_existing(root, roster, quarantine=True):
                 voice = next((n for n in by_name if sc.slug(n) == vslug), None)
                 files = sorted(f for f in os.listdir(vdir) if f.endswith(".wav"))
                 if voice is None:
+                    # A voice the roster no longer names. The common cause is
+                    # benign and expected: `prefer_quality` drops the Compact
+                    # tier once an Enhanced install of the same voice appears,
+                    # so `Samantha`'s audio is orphaned the moment
+                    # `Samantha (Enhanced)` lands. Quarantined rather than left
+                    # in place, because audio outside the roster is invisible
+                    # to `--check` -- which reads the manifest -- while still
+                    # sitting in the tree for anything that globs directories.
                     unknown_voice.append((split, cat, vslug, len(files)))
+                    if quarantine:
+                        dest = os.path.join(stale_dir, split, cat, vslug)
+                        os.makedirs(os.path.dirname(dest), exist_ok=True)
+                        if os.path.isdir(dest):
+                            for name in files:
+                                os.replace(os.path.join(vdir, name),
+                                           os.path.join(dest, name))
+                        else:
+                            os.rename(vdir, dest)
                     continue
                 v = by_name[voice]
                 if v["split"] != split:
