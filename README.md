@@ -32,9 +32,12 @@ comes up and the clip is generated.
 Answers are drawn at the largest size they fit: short ones like "Yes" at 24 px,
 most at 16 px.
 
-Every so often the shake is replaced by a fart or a sigh — never more often than
+Every so often the shake is replaced by a fart or a laugh — never more often than
 once every five presses, averaging about one in eight. Tune it via
 `ALTERNATE_MIN_GAP` / `ALTERNATE_ONE_IN` in `src/shake.py`.
+
+To change a sampled clip, edit `tools/build_clips.sh`, run it, then
+`./tools/deploy.sh`. If a clip sounds overdriven, lower its `--peak`.
 
 A refresh takes a few seconds and flashes the panel black/white. That is normal
 for e-paper, not a fault.
@@ -55,7 +58,7 @@ See [docs/design.md](docs/design.md) for why.
 | --- | --- |
 | `src/main.py` | Device entry point — input loop, autoruns at power-on |
 | `src/magic8.py` | The twenty answers, RNG, and screen rendering |
-| `src/sounds.py` | Waveform synthesis — shake, fart, sigh. Pure DSP, host-testable |
+| `src/sounds.py` | Waveform synthesis — shake and fart. Pure DSP, host-testable |
 | `src/shake.py` | Codec, clip cache, and which sound a press gets |
 | `src/es8311.py`, `src/audio_pio_mpy.py` | Codec + I2S-over-PIO, vendored from Waveshare |
 | `src/board.py` | Pin map + SHTC3, PCF85063A, FT6336U, Battery |
@@ -63,7 +66,9 @@ See [docs/design.md](docs/design.md) for why.
 | `examples/display_status.py` | Sensor/battery/clock readout |
 | `tools/probe.py` | Bus scan + battery, run from the host |
 | `tools/input_monitor.py` | Log input transitions — use if a button misbehaves |
-| `tools/deploy.sh` | Copy modules to the board and reset |
+| `tools/deploy.sh` | Copy modules and clips to the board and reset |
+| `tools/make_clip.py` | Convert audio to a raw clip the codec can DMA directly |
+| `tools/build_clips.sh` | Rebuild `clips/` — holds the per-clip level tuning |
 | `docs/design.md` | Why it is built this way |
 | `docs/hardware.md` | Full pinout, what's verified, and the gotchas |
 | `docs/restore-factory-firmware.md` | Putting the original firmware back |

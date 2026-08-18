@@ -1,9 +1,10 @@
 """Press sounds, played through the ES8311.
 
 Normally the shake. Occasionally -- no more often than once every
-`ALTERNATE_MIN_GAP` presses -- one of the alternates in `sounds` instead.
+`ALTERNATE_MIN_GAP` presses -- an alternate instead: a synthesised fart, or a
+sampled laugh read off the filesystem.
 
-Waveforms live in `sounds`; this module owns the codec, the clip cache and the
+Synthesis lives in `sounds`; this module owns the codec, the clip cache and the
 choice of what to play.
 
 Audio is strictly optional. Every entry point here swallows its own errors --
@@ -28,7 +29,12 @@ DAC_VOLUME = 90  # ES8311 volume is dB-based; 80-100 is the sane range
 # For "guaranteed at least once every N", set ALTERNATE_ONE_IN = 1 instead.
 ALTERNATE_MIN_GAP = 5
 ALTERNATE_ONE_IN = 3
-ALTERNATES = ("fart", "sigh")
+ALTERNATES = ("fart", "laugh")
+
+# Alternates backed by a sampled file rather than synthesis. Built on the host by
+# tools/make_clip.py, which emits exactly the packed format the PIO consumes, so
+# the device only has to read bytes -- no decoding, no parsing.
+SAMPLE_CLIPS = {"laugh": "laugh.raw"}
 
 
 def _rand_below(n):
@@ -100,17 +106,41 @@ class Shaker:
         self._audio.dout_pio_init()
         self._audio.start()
 
-        # Reserve the alternates' output buffers before generating anything --
-        # largest first, and *before* the shake clip. MicroPython's heap never
-        # compacts, and allocating an array needs a transient block twice its
-        # final size, so the order here is what makes the 105 KB sigh fit at all.
-        # Filling the buffers later costs nothing extra.
-        for name in sorted(ALTERNATES, key=lambda n: -sounds.ALTERNATE_MS[n]):
+        # Reserve every alternate's buffer before generating anything -- largest
+        # first, and *before* the shake clip. MicroPython's heap never compacts,
+        # and allocating an array needs a transient block twice its final size,
+        # so this ordering is what makes the largest clip fit at all.
+        wanted = {}
+        for name in ALTERNATES:
+            if name in SAMPLE_CLIPS:
+                try:
+                    wanted[name] = os.stat(SAMPLE_CLIPS[name])[6]
+                except OSError:
+                    print("sample '%s' missing (%s); skipping"
+                          % (name, SAMPLE_CLIPS[name]))
+            else:
+                wanted[name] = 4 * sounds.output_frames(sounds.ALTERNATE_MS[name])
+
+        for name in sorted(wanted, key=lambda n: -wanted[n]):
             gc.collect()
             try:
-                self._buffers[name] = sounds.allocate(sounds.ALTERNATE_MS[name])
+                self._buffers[name] = sounds.allocate_bytes(wanted[name])
             except MemoryError:
-                print("no room to reserve '%s'; it will be skipped" % name)
+                print("no room to reserve '%s' (%d bytes); it will be skipped"
+                      % (name, wanted[name]))
+
+        # Sampled clips load now rather than from prepare_next: reading ~140 KB
+        # off the filesystem takes tens of milliseconds, unlike synthesis.
+        for name, path in SAMPLE_CLIPS.items():
+            if name not in self._buffers:
+                continue
+            try:
+                with open(path, "rb") as handle:
+                    handle.readinto(self._buffers[name])
+                self._clips[name] = self._buffers.pop(name)
+            except OSError as exc:
+                print("could not read '%s' (%s)" % (path, exc))
+                del self._buffers[name]
 
         gc.collect()
         self._clips["shake"] = sounds.shake()
@@ -118,10 +148,10 @@ class Shaker:
     def prepare_next(self):
         """Generate one not-yet-built alternate. Call while idle.
 
-        Synthesis is slow enough to be felt (~1.0 s for the fart, ~2.0 s for the
-        sigh), so it is done between presses rather than during one. Spreading it
-        one clip per press keeps each pause short, and ALTERNATE_MIN_GAP
-        guarantees both are ready long before the first alternate can fire.
+        Synthesis is slow enough to be felt (~1.0 s for the fart), so it is done
+        between presses rather than during one. Sampled clips are already loaded
+        by _setup and never appear here. ALTERNATE_MIN_GAP guarantees everything
+        is ready long before the first alternate can fire.
 
         Returns True if it generated something, so a caller can tell idle work
         from a no-op.
@@ -185,7 +215,7 @@ class Shaker:
         """Wait out any remaining audio, then drop the power amp.
 
         Usually a no-op for the shake (0.54 s against a ~1.4 s refresh), but the
-        sigh is 1.1 s and can still be running, so this genuinely waits.
+        laugh is 1.5 s and will still be running, so this genuinely waits.
         """
         try:
             if self._audio is not None:

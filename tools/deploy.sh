@@ -15,6 +15,14 @@ for module in board epaper magic8 sounds shake es8311 audio_pio_mpy main; do
     uvx --quiet mpremote connect "$PORT" cp "src/${module}.py" ":${module}.py"
 done
 
+# Sampled clips. Only copied when missing or changed would be nicer, but these
+# are small and mpremote has no sync.
+for clip in clips/*.raw; do
+    [ -e "$clip" ] || continue
+    echo "  -> $(basename "$clip")"
+    uvx --quiet mpremote connect "$PORT" cp "$clip" ":$(basename "$clip")"
+done
+
 echo "resetting"
 uvx --quiet mpremote connect "$PORT" reset
 

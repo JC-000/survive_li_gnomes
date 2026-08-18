@@ -7,11 +7,13 @@ Everything is integer-only: MicroPython floats would roughly triple generation
 time and none of this needs the precision. Trig is used once per clip at setup
 to derive fixed-point filter coefficients, never per sample.
 
-The shake is synthesised at the full 24 kHz output rate. The two alternates are
-synthesised at 8 kHz and sample-and-held up by 3, because they are both
-low-frequency sounds and generating them at full rate costs three times as long
-for no audible gain. The hold does add imaging above 4 kHz -- inaudible on a
-fart, very slightly gritty on the sigh.
+The shake is synthesised at the full 24 kHz output rate. The fart is synthesised
+at 8 kHz and sample-and-held up by 3: it is a low-frequency sound, so generating
+at full rate would cost three times as long for no audible gain, and the imaging
+the hold adds above 4 kHz is inaudible on it.
+
+Not everything here is synthesised. Sampled clips (see tools/make_clip.py) are
+converted on the host and read straight off the filesystem into a buffer.
 """
 
 import math
@@ -25,14 +27,14 @@ _PEAK = 30000  # leave a little headroom below full scale
 
 # Clip lengths, and the only place they are defined -- Shaker reserves output
 # buffers from these before generating anything.
-ALTERNATE_MS = {"fart": 650, "sigh": 1100}
+ALTERNATE_MS = {"fart": 650}
 
 
 def output_frames(duration_ms):
     return SAMPLE_RATE * duration_ms // 1000
 
 
-def allocate(duration_ms):
+def allocate_bytes(n_bytes):
     """Reserve an output buffer.
 
     Worth calling early, and largest first. Two traps:
@@ -44,7 +46,11 @@ def allocate(duration_ms):
       largest free block after the shake clip, which is plenty for a 105 KB sigh
       and still not enough to build one.
     """
-    return array("I", bytearray(4 * output_frames(duration_ms)))
+    return array("I", bytearray(n_bytes))
+
+
+def allocate(duration_ms):
+    return allocate_bytes(4 * output_frames(duration_ms))
 
 
 def _xorshift(seed):
@@ -188,72 +194,5 @@ def fart(out=None, duration_ms=None):
             env = 256
 
         raw[i] = (low2 * env) >> 8
-
-    return _normalise_and_upsample(raw, out)
-
-
-def sigh(out=None, duration_ms=None):
-    """A breathy descending vowel.
-
-    Sawtooth excitation through two resonators tuned to the first two formants
-    of an open vowel, with breath noise mixed in and rising toward the end.
-    This is *vowel-like*, not a recording of a person -- see docs/design.md.
-    """
-    if duration_ms is None:
-        duration_ms = ALTERNATE_MS["sigh"]
-
-    F0_START = 250        # descending pitch, female-ish range
-    F0_END = 165
-    FORMANTS = (850, 1250)
-    RESONANCE = 0.97      # pole radius; higher = more vocal, more ringing
-
-    frames = SYNTH_RATE * duration_ms // 1000
-    raw = array("i", bytearray(4 * frames))
-
-    # Fixed-point resonator coefficients, computed once.
-    coeffs = []
-    for hz in FORMANTS:
-        theta = 2 * math.pi * hz / SYNTH_RATE
-        coeffs.append((
-            int(2 * RESONANCE * math.cos(theta) * 4096),
-            int(RESONANCE * RESONANCE * 4096),
-        ))
-    state = [[0, 0] for _ in FORMANTS]
-
-    seed = 0xC0FFEE
-    phase = 0
-
-    for i in range(frames):
-        freq = F0_START - ((F0_START - F0_END) * i) // frames
-        phase = (phase + (freq * 65536) // SYNTH_RATE) & 0xFFFF
-
-        # Excitation scaled well down: the resonators have a gain of roughly
-        # 1/(1-r) ~= 33 at the peak, and keeping intermediate values inside
-        # MicroPython's 31-bit small-int range avoids heap allocation per sample.
-        glottal = (phase - 32768) >> 6
-
-        seed = _xorshift(seed)
-        breath = ((seed & 0x7FF) - 1024) >> 1
-        # Breathiness rises through the sigh as the voice trails off.
-        excitation = glottal + ((breath * (64 + (192 * i) // frames)) >> 8)
-
-        total = 0
-        for f in range(len(FORMANTS)):
-            a1, a2 = coeffs[f]
-            hist = state[f]
-            resonated = excitation + ((a1 * hist[0]) >> 12) - ((a2 * hist[1]) >> 12)
-            hist[1] = hist[0]
-            hist[0] = resonated
-            total += resonated
-
-        # Swell then fall -- the shape is what makes it read as a sigh.
-        attack = frames // 5
-        if i < attack:
-            env = (i << 8) // attack
-        else:
-            env = ((frames - i) << 8) // (frames - attack)
-            env = (env * env) >> 8
-
-        raw[i] = (total * env) >> 8
 
     return _normalise_and_upsample(raw, out)

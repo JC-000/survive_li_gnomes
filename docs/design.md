@@ -82,8 +82,8 @@ dropped from ~3.1 s to ~1.6 s as a side effect.
 
 ### Alternate sounds
 
-Most presses shake. Occasionally the clip is swapped for a fart or a sigh
-(`sounds.fart` / `sounds.sigh`). The policy lives in `shake.py`:
+Most presses shake. Occasionally the clip is swapped for a fart or a laugh.
+The policy lives in `shake.py`:
 
 | Constant | Value | Effect |
 | --- | --- | --- |
@@ -94,24 +94,38 @@ Simulated over 200 000 presses: minimum gap 6, mean 8, ~12.5% of presses, split
 evenly between the two. For "guaranteed at least once every N" instead of "never
 more often than every N", set `ALTERNATE_ONE_IN = 1`.
 
-**The sigh is synthesised, and it is not a recording of a person.** It is a
-sawtooth excitation through two resonators tuned to the first two formants of an
-open vowel, with breath noise rising through it. That reads as a breathy vocal
-*"aahh"* rather than as a specific human being. A convincing woman's sigh needs
-real vocal tract modelling or a real recording — and the board has a working
-microphone if a real one is wanted.
+The fart is synthesised (a descending buzz with an irregular sputter). The laugh
+is a **sampled clip**, converted on the host by `tools/make_clip.py` and read off
+the filesystem — MicroPython has no MP3 decoder, and decoding one on a 150 MHz
+M33 would be far slower than real time.
 
-Both alternates are synthesised at 8 kHz and sample-and-held up by 3. They are
-low-frequency sounds, so generating at the full 24 kHz would cost three times as
-long for no audible gain. The hold adds imaging above 4 kHz: inaudible on the
-fart, marginally gritty on the sigh.
+`tools/build_clips.sh` holds the recipe, so the conversion is reproducible rather
+than a one-off blob. The output is exactly the packed format the PIO consumes, so
+the device only reads bytes: no decoding, no parsing, and `readinto` fills a
+pre-reserved buffer with no extra allocation.
+
+### Clip level: do not normalise to full scale
+
+The laughter source peaks at 43.6% of full scale. Normalising it to the usual
+30000 applied +6.4 dB and **overdrove the amp and speaker** — audibly distorted,
+even though nothing clipped digitally (peak 29916 of 32767). It is now built with
+`--peak 15000`, roughly its original recorded level.
+
+Digital headroom is not the same as analogue headroom. If a clip sounds
+overdriven, lower `--peak` and rebuild; there is no need to touch the codec
+volume or the runtime.
+
+Length is bounded by RAM, not flash: 24 kHz packed stereo costs 96 KB/s against a
+~490 KB heap that also holds the other clips, so the 5.04 s source is trimmed to
+the highest-energy 1.5 s window (140 KB) with 8 ms fades to hide the splice.
 
 ### Why the clips are built while idle
 
-Synthesis is slow enough to feel — ~1.0 s for the fart, ~2.0 s for the sigh — so
-`Shaker.prepare_next()` builds one clip per press *after* the answer is on
-screen, and `main` calls it from the idle path. `ALTERNATE_MIN_GAP` guarantees
-both are ready long before either can fire.
+Synthesis is slow enough to feel — ~1.0 s for the fart — so
+`Shaker.prepare_next()` builds it *after* the answer is on screen, and `main`
+calls it from the idle path. Sampled clips load in `_setup` instead: reading
+140 KB off the filesystem takes tens of milliseconds, not seconds.
+`ALTERNATE_MIN_GAP` guarantees everything is ready long before it can fire.
 
 ### Heap fragmentation: reserve big buffers early, largest first
 
@@ -123,8 +137,8 @@ The three clips are ~213 KB of the ~490 KB heap. Two things bite:
    the transient peak is *twice* the final size.
 
 Measured: after generating the shake clip, 419 KB was free and the largest block
-was 174 KB — ample for a 105 KB sigh, and still not enough to build one, because
-building it briefly needs 211 KB. `Shaker._setup` therefore reserves the
+was 174 KB — ample for a 140 KB clip, and still not enough to allocate one,
+because allocating it briefly needs 280 KB. `Shaker._setup` therefore reserves the
 alternates' buffers largest-first and *before* the shake clip, then fills them
 later. Reordering those three lines is the whole fix.
 
