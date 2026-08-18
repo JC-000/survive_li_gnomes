@@ -1,0 +1,808 @@
+#!/usr/bin/env python3
+"""Tests for src/eliza.py and the generated src/eliza_rules.py.
+
+    uv run tools/test_eliza.py
+    uv run tools/test_eliza.py -v
+
+Host-only and hardware-free by design -- `eliza` imports nothing but `os` and
+its own rule data, which is what makes the engine testable at all. Everything
+downstream of it (panel, codec) is not exercised here.
+
+The tests worth reading before changing anything are the bag-mode ones. The
+engine has two front ends over one rule set, and the invariant that matters is
+that the degraded one can never emit a reply it cannot fill -- a stray "3" on
+the panel is the visible form of that bug.
+"""
+
+import os
+import sys
+import unittest
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+
+import eliza  # noqa: E402
+import eliza_rules as rules  # noqa: E402
+
+
+class TestMatcher(unittest.TestCase):
+    """The word-list matcher, against patterns taken from the real script."""
+
+    def decompose(self, pattern, sentence):
+        found = eliza.match(pattern, sentence.split())
+        return None if found is None else [" ".join(c) for c in found]
+
+    def test_wildcard_and_literals(self):
+        self.assertEqual(
+            self.decompose((0, "YOU", 0, "ME"), "WHY DO YOU HATE ME"),
+            ["WHY DO", "YOU", "HATE", "ME"])
+
+    def test_leading_wildcard_binds_shortest(self):
+        # "(0 YOU 0 ME)" must bind the first YOU, not the last, or the captured
+        # middle swallows the wrong half of the sentence.
+        self.assertEqual(
+            self.decompose((0, "YOU", 0), "YOU SAID YOU WOULD"),
+            ["", "YOU", "SAID YOU WOULD"])
+
+    def test_trailing_wildcard_may_be_empty(self):
+        self.assertEqual(self.decompose((0, "YOU", 0), "YOU"), ["", "YOU", ""])
+
+    def test_no_match_returns_none(self):
+        self.assertIsNone(self.decompose((0, "YOU", 0, "ME"), "WHY DO YOU HATE HIM"))
+
+    def test_exact_word_count(self):
+        self.assertEqual(self.decompose((0, "I", 1, "YOU"), "SO I HATE YOU"),
+                         ["SO", "I", "HATE", "YOU"])
+        self.assertIsNone(self.decompose((0, "I", 1, "YOU"), "SO I REALLY HATE YOU"))
+
+    def test_word_class(self):
+        # The script's (*SAD UNHAPPY DEPRESSED SICK) form.
+        pattern = (0, "YOU", "ARE", 0, ("SAD", "UNHAPPY"), 0)
+        self.assertEqual(
+            self.decompose(pattern, "YOU ARE VERY SAD TODAY"),
+            ["", "YOU", "ARE", "VERY", "SAD", "TODAY"])
+        self.assertIsNone(self.decompose(pattern, "YOU ARE VERY TALL TODAY"))
+
+    def test_dlist_tag(self):
+        # "/FAMILY" matches any word the script tags, which is what lets one
+        # rule cover mother, father, sister, brother, wife and children.
+        pattern = (0, "YOUR", 0, "/FAMILY", 0)
+        self.assertIsNotNone(self.decompose(pattern, "YOUR POOR SISTER AGAIN"))
+        self.assertIsNone(self.decompose(pattern, "YOUR POOR DOG AGAIN"))
+
+    def test_real_script_patterns(self):
+        for pattern, sentence, expected in (
+            ((0, "YOU", "REMEMBER", 0), "DO YOU REMEMBER THE WAR",
+             ["DO", "YOU", "REMEMBER", "THE WAR"]),
+            ((0, "YOU", "ARE", 0), "I THINK YOU ARE RIGHT",
+             ["I THINK", "YOU", "ARE", "RIGHT"]),
+            ((0, "YOUR", 0), "THIS IS YOUR PROBLEM",
+             ["THIS IS", "YOUR", "PROBLEM"]),
+        ):
+            self.assertEqual(self.decompose(pattern, sentence), expected, pattern)
+
+
+class TestFill(unittest.TestCase):
+    def test_slots_are_one_based(self):
+        captured = [["WHY", "DO"], ["YOU"], ["HATE"], ["ME"]]
+        self.assertEqual(eliza.fill("WHAT MAKES YOU 3 ME", captured),
+                         "WHAT MAKES YOU HATE ME")
+
+    def test_empty_component_leaves_no_double_space(self):
+        self.assertEqual(eliza.fill("REALLY, 1 THEN", [[]]), "REALLY, THEN")
+
+    def test_out_of_range_slot_is_dropped(self):
+        self.assertEqual(eliza.fill("SO 9 THEN", [["A"]]), "SO THEN")
+
+    def test_trailing_subject_pronoun_becomes_an_object_one(self):
+        # The script's one-pass YOU -> I substitution has no notion of case, so
+        # "what I told you" decomposes to "what you told I".
+        self.assertEqual(eliza.fill("FORGET 1", [["WHAT", "YOU", "TOLD", "I"]]),
+                         "FORGET WHAT YOU TOLD ME")
+
+    def test_a_bare_i_capture_is_left_alone(self):
+        # There it really is the subject.
+        self.assertEqual(eliza.fill("SO 1 THEN", [["I"]]), "SO I THEN")
+
+
+class TestNormalise(unittest.TestCase):
+    def test_upper_cases_and_splits(self):
+        self.assertEqual(eliza.normalise("I am sad"), ["I", "AM", "SAD"])
+
+    def test_keeps_clause_breaks_for_the_fragmenter(self):
+        # The comma has to survive normalise() or the script cannot break on it.
+        self.assertIn("HELP,", eliza.normalise("I need help, that much is certain"))
+
+    def test_answers_the_first_clause_only(self):
+        doctor = eliza.Doctor()
+        self.assertEqual(doctor.respond("I need some help, that much seems certain"),
+                         "WHAT WOULD IT MEAN TO YOU IF YOU GOT SOME HELP")
+
+    def test_breaks_on_but(self):
+        doctor = eliza.Doctor()
+        reply = doctor.respond("I am sad but the weather is fine")
+        self.assertIn("SAD", reply)
+
+
+class TestRanking(unittest.TestCase):
+    def test_script_rank_wins(self):
+        # COMPUTER is rank 50 in the script precisely so it beats everything.
+        doctor = eliza.Doctor()
+        self.assertEqual(doctor._rank(["MY", "COMPUTER", "YES"])[0], "COMPUTER")
+
+    def test_ties_keep_the_order_they_were_said(self):
+        doctor = eliza.Doctor()
+        self.assertEqual(doctor._rank(["YES", "NO"]), ["YES", "NO"])
+        self.assertEqual(doctor._rank(["NO", "YES"]), ["NO", "YES"])
+
+    def test_priority_table_overrides_a_tie(self):
+        # The whole point of the priority table: with no word order, "AM" would
+        # otherwise beat "I" by sorting first, and answer with a deferral.
+        plain = eliza.Doctor()
+        self.assertEqual(plain._rank(["AM", "I"])[0], "AM")
+        ranked = eliza.Doctor(priority={"I": 6, "AM": -4})
+        self.assertEqual(ranked._rank(["AM", "I"])[0], "I")
+
+    def test_unknown_words_are_not_keywords(self):
+        self.assertEqual(eliza.Doctor()._rank(["AARDVARK", "BANANA"]), [])
+
+
+class TestRotation(unittest.TestCase):
+    def test_replies_cycle_rather_than_repeat(self):
+        # The script cycles its replies; random choice would repeat constantly,
+        # which is what makes a toy feel broken.
+        doctor = eliza.Doctor()
+        replies = [doctor.respond("Everyone hates me") for _ in range(4)]
+        self.assertEqual(len(set(replies)), 4, replies)
+
+    def test_cycle_wraps_around(self):
+        doctor = eliza.Doctor()
+        first = doctor.respond("Everyone hates me")
+        count = len(rules.RULES["EVERYONE"][2][0][1])
+        for _ in range(count - 1):
+            doctor.respond("Everyone hates me")
+        self.assertEqual(doctor.respond("Everyone hates me"), first)
+
+    def test_none_fallback_also_cycles(self):
+        doctor = eliza.Doctor()
+        replies = [doctor.respond("aardvark banana") for _ in range(len(rules.NONE))]
+        self.assertEqual(sorted(replies), sorted(rules.NONE))
+
+
+class TestMemory(unittest.TestCase):
+    def test_something_said_earlier_comes_back(self):
+        doctor = eliza.Doctor()
+        doctor.respond("My mother hates me")
+        for _ in range(6):
+            reply = doctor.respond("aardvark banana")
+            if "MOTHER" in reply:
+                break
+        else:
+            self.fail("nothing from memory was ever offered")
+
+    def test_memory_only_fills_from_the_ordered_path(self):
+        # The degraded path cannot capture a run of the user's words, so it must
+        # not queue anything -- a memory it cannot fill would be a stray slot.
+        doctor = eliza.Doctor()
+        doctor.respond_to_keywords(["MY", "MOTHER"])
+        self.assertEqual(doctor._memory, [])
+
+
+class TestBagMode(unittest.TestCase):
+    """The degraded front end. These are the tests that matter."""
+
+    NOUNS = ("MOTHER", "FATHER", "SISTER", "BROTHER", "WIFE", "CHILDREN")
+
+    def test_never_emits_an_unfilled_slot(self):
+        # A leftover digit on the panel is the visible form of "we shipped a
+        # template the spotter could not fill". Sweep every keyword and every
+        # keyword-plus-noun pair.
+        doctor = eliza.Doctor()
+        bags = [[k] for k in rules.RULES]
+        bags += [[k, n] for k in rules.RULES for n in self.NOUNS]
+        for bag in bags:
+            for _ in range(3):     # rotate, so every template gets a turn
+                reply = doctor.respond_to_keywords(bag, nouns=self.NOUNS)
+                self.assertFalse(any(w.isdigit() for w in reply.split()),
+                                 "unfilled slot for %r: %r" % (bag, reply))
+                self.assertNotIn("  ", reply)
+                self.assertTrue(reply.strip())
+
+    def test_phrase_templates_are_filtered_out(self):
+        doctor = eliza.Doctor()
+        for keyword, (rank, goto, ruleset) in rules.RULES.items():
+            for pattern, templates in ruleset:
+                usable = doctor._usable(templates, spotted=["MOTHER"], captured=[])
+                for kind, _ in usable:
+                    self.assertNotEqual(kind, rules.PHRASE,
+                                        "%s leaked a PHRASE template" % keyword)
+
+    def test_noun_template_echoes_a_spotted_noun(self):
+        doctor = eliza.Doctor(priority={"MY": 8})
+        replies = [doctor.respond_to_keywords(["MY", "SISTER"], nouns=self.NOUNS)
+                   for _ in range(6)]
+        self.assertTrue(any("SISTER" in r for r in replies), replies)
+
+    def test_noun_template_is_skipped_when_nothing_was_spotted(self):
+        # "WHY DO YOU SAY YOUR" is worse than changing the subject.
+        doctor = eliza.Doctor(priority={"MY": 8})
+        for _ in range(8):
+            reply = doctor.respond_to_keywords(["MY"], nouns=self.NOUNS)
+            self.assertFalse(reply.endswith("YOUR"), reply)
+            self.assertFalse(any(w.isdigit() for w in reply.split()), reply)
+
+    def test_literal_slot_is_filled_from_the_word_class(self):
+        doctor = eliza.Doctor(priority={"I": 6})
+        reply = doctor.respond_to_keywords(["I", "AM", "UNHAPPY"])
+        self.assertIn("UNHAPPY", reply)
+
+    def test_copula_may_be_assumed(self):
+        # A 40-word spotter will not reliably report "ARE"; refusing the best
+        # rule in the script over it would be a poor trade.
+        doctor = eliza.Doctor(priority={"I": 6})
+        reply = doctor.respond_to_keywords(["I", "SAD"])
+        self.assertIn("SAD", reply)
+
+    def test_empty_bag_still_answers(self):
+        doctor = eliza.Doctor()
+        self.assertIn(doctor.respond_to_keywords([]), rules.NONE)
+
+    def test_bag_is_order_independent(self):
+        a = eliza.Doctor(priority={"MY": 8})
+        b = eliza.Doctor(priority={"MY": 8})
+        self.assertEqual(a.respond_to_keywords(["MY", "MOTHER"], nouns=self.NOUNS),
+                         b.respond_to_keywords(["MOTHER", "MY"], nouns=self.NOUNS))
+
+
+class TestDegradedAcceptance(unittest.TestCase):
+    """Go/no-go for the whole spotter idea: does a bag of nouns get answered?
+
+    A 25-word vocabulary and a perfect spotter. If these fail, the degraded
+    build is a fortune-cookie machine and the project should either ship the
+    display-only full-sentence version or not ship at all -- so treat a failure
+    here as a product decision, not a bug to paper over.
+
+    The trap this guards is subtle. Nouns are not keywords: DOCTOR hangs its
+    family responses off keyword MY and its feeling ones off keyword I, both
+    function words a spotter will never be given room for. Before the
+    assumption machinery, every one of these answered with a NONE deflection
+    while holding the noun in its hand.
+    """
+
+    NOUNS = ("MOTHER", "FATHER", "WIFE", "HUSBAND", "SISTER", "BROTHER",
+             "CHILDREN", "WORK", "MONEY", "SLEEP", "DEATH", "LOVE")
+    VOCABULARY = NOUNS + ("SAD", "HAPPY", "ANGRY", "AFRAID", "SICK", "WANT",
+                          "NEED", "YES", "NO", "DREAM", "COMPUTER", "ALWAYS",
+                          "SORRY")
+
+    # Noun-bearing things somebody might plausibly say to a toy therapist.
+    UTTERANCES = (
+        "I hate my mother", "my brother died", "my wife thinks I work too much",
+        "my children are afraid", "I need money", "work makes me sick",
+        "my husband never listens", "my father was always angry",
+        "I cannot sleep", "I am sad about my sister", "money is the problem",
+        "I dream about death", "my mother is sick", "I want my children back",
+        "love is complicated", "my sister is unhappy", "work is killing me",
+        "I feel afraid at work", "my father died last year",
+        "my wife wants a divorce",
+    )
+
+    def bag(self, text):
+        """What a perfect spotter would hand over: recognised words, no order."""
+        heard = {w.strip(",.!?;") for w in eliza.normalise(text)}
+        return sorted(w for w in heard if w in self.VOCABULARY)
+
+    def test_the_six_reported_failures(self):
+        doctor = eliza.Doctor()
+        for text in ("I hate my mother", "my brother died",
+                     "my wife thinks I work too much", "my children are afraid",
+                     "I need money", "work makes me sick"):
+            spotted = self.bag(text)
+            self.assertTrue(spotted, text)
+            reply = doctor.respond_to_keywords(spotted, nouns=self.NOUNS)
+            self.assertNotIn(reply, rules.NONE,
+                             "deflected %r having heard %s" % (text, spotted))
+
+    def test_most_noun_utterances_land(self):
+        doctor = eliza.Doctor()
+        landed = [t for t in self.UTTERANCES
+                  if doctor.respond_to_keywords(self.bag(t), nouns=self.NOUNS)
+                  not in rules.NONE]
+        self.assertGreaterEqual(len(landed), 2 * len(self.UTTERANCES) // 3,
+                                "only %d of %d landed" % (len(landed),
+                                                          len(self.UTTERANCES)))
+
+    def test_a_good_share_echo_the_noun_itself(self):
+        # Landing is not enough -- a topical canned line is still canned. The
+        # echo is the thing the noun budget was spent on.
+        doctor = eliza.Doctor()
+        echoed = 0
+        for text in self.UTTERANCES:
+            spotted = self.bag(text)
+            reply = doctor.respond_to_keywords(spotted, nouns=self.NOUNS)
+            if any(word in reply.split() for word in spotted):
+                echoed += 1
+        self.assertGreaterEqual(echoed, len(self.UTTERANCES) // 3,
+                                "only %d of %d echoed" % (echoed, len(self.UTTERANCES)))
+
+    def test_every_noun_alone_gets_a_reply(self):
+        doctor = eliza.Doctor()
+        for noun in self.NOUNS:
+            reply = doctor.respond_to_keywords([noun], nouns=self.NOUNS)
+            self.assertNotIn(reply, rules.NONE, noun)
+
+
+class TestNoFunctionWordsNeeded(unittest.TestCase):
+    """The degraded path must not depend on spotting MY, I, AM or ARE.
+
+    Those are the worst words to ask a recogniser for -- one or two phonemes,
+    unstressed, low energy, and coarticulated into whatever follows ("my
+    mother" is often said with no boundary at all). DTW over MFCC templates is
+    least accurate on exactly them, and a ~25-word budget cannot afford six
+    slots for words that do not carry meaning.
+
+    So the engine assumes them instead (_ASSUMED_IN_BAG), and this test is what
+    stops that guarantee eroding: every case here is checked with the function
+    words absent from the bag entirely, which is what the spotter will deliver.
+    """
+
+    NOUNS = ("MOTHER", "FATHER", "WIFE", "HUSBAND", "SISTER", "BROTHER",
+             "CHILDREN", "WORK", "MONEY", "SLEEP", "DEATH", "LOVE")
+
+    # (what a spotter that catches function words would hear, what it really
+    # hears). The second is the only one that has to work.
+    CASES = (
+        (["I", "SAD"], ["SAD"]),
+        (["MY", "MOTHER"], ["MOTHER"]),
+        (["I", "MY", "BROTHER", "SICK"], ["BROTHER", "SICK"]),
+        (["MY", "WIFE"], ["WIFE"]),
+        (["MY", "CHILDREN", "ARE"], ["CHILDREN"]),
+        (["I", "AM", "UNHAPPY"], ["UNHAPPY"]),
+        (["MY", "FATHER", "IS", "SICK"], ["FATHER", "SICK"]),
+        (["I", "WANT", "MY", "MONEY"], ["MONEY"]),
+    )
+
+    def test_content_words_alone_still_land(self):
+        doctor = eliza.Doctor()
+        landed = []
+        for _, without in self.CASES:
+            reply = doctor.respond_to_keywords(without, nouns=self.NOUNS)
+            if reply not in rules.NONE:
+                landed.append(without)
+        self.assertGreaterEqual(len(landed), 6,
+                                "only %d of %d landed without function words"
+                                % (len(landed), len(self.CASES)))
+
+    def test_the_function_words_add_nothing(self):
+        """Spotting them should be a bonus, never a requirement."""
+        for withfw, without in self.CASES:
+            rich = eliza.Doctor().respond_to_keywords(withfw, nouns=self.NOUNS)
+            poor = eliza.Doctor().respond_to_keywords(without, nouns=self.NOUNS)
+            self.assertNotIn(poor, rules.NONE, without)
+            self.assertEqual(rich, poor,
+                             "%s answered differently from %s" % (withfw, without))
+
+    def test_the_shipped_vocabulary_contains_no_function_words(self):
+        # The REPL's word list is what the recogniser agent builds from, so a
+        # function word creeping back in there is the regression to catch.
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
+        import eliza_repl
+
+        for word in ("MY", "YOUR", "I", "YOU", "AM", "ARE", "IS", "WAS"):
+            self.assertNotIn(word, eliza_repl.VOCABULARY)
+
+
+class TestNounBeatsEmotion(unittest.TestCase):
+    """When a bag holds both a noun and a feeling, the noun has to win.
+
+    Not a stylistic preference. The script's feeling rules fill their slot from
+    the emotion word and never mention the noun, so ranking them first makes
+    "my brother is sick" and "my children are sick" produce the same sentence
+    -- and worse, "I AM SORRY TO HEAR YOU ARE SICK" tells the user *they* are
+    sick when they said their brother was. The noun rules keep the subject.
+    """
+
+    NOUNS = ("MOTHER", "BROTHER", "SISTER", "WIFE", "CHILDREN", "WORK", "MONEY")
+
+    def test_the_noun_survives(self):
+        doctor = eliza.Doctor(priority={"MY": 6, "I": 2})
+        for noun, feeling in (("BROTHER", "SICK"), ("MOTHER", "SAD"),
+                              ("WIFE", "UNHAPPY"), ("CHILDREN", "SICK")):
+            reply = doctor.respond_to_keywords([noun, feeling], nouns=self.NOUNS)
+            self.assertNotIn(reply, rules.NONE)
+            self.assertNotIn("YOU ARE " + feeling, reply,
+                             "misattributed %s to the user" % feeling)
+
+    def test_different_nouns_give_different_replies(self):
+        # The tell that the noun is being used rather than discarded.
+        doctor = eliza.Doctor(priority={"MY": 6, "I": 2})
+        a = doctor.respond_to_keywords(["BROTHER", "SICK"], nouns=self.NOUNS)
+        doctor = eliza.Doctor(priority={"MY": 6, "I": 2})
+        b = doctor.respond_to_keywords(["MONEY", "SICK"], nouns=self.NOUNS)
+        self.assertNotEqual(a, b)
+
+    def test_a_feeling_alone_still_uses_the_feeling_rules(self):
+        doctor = eliza.Doctor(priority={"MY": 6, "I": 2})
+        self.assertIn("SAD", doctor.respond_to_keywords(["SAD"], nouns=self.NOUNS))
+
+
+class TestVocabContract(unittest.TestCase):
+    """src/vocab.py against the engine, which is a contract nothing else checks.
+
+    The device build spends twenty-three recogniser classes, each needing three
+    recorded takes. A class that ELIZA has no answer for is that whole cost for
+    a deflection -- and it fails silently, looking like blandness rather than an
+    error. So every class earns its slot here or it should not be recorded.
+    """
+
+    def setUp(self):
+        try:
+            import vocab
+        except ImportError:
+            self.skipTest("src/vocab.py not present")
+        self.vocab = vocab
+
+        # Every test below loops over a collection derived from vocab.py, so an
+        # empty collection would make it pass while asserting nothing. Measured:
+        # before this guard, deleting the entire vocabulary left all 71 tests
+        # green. A test that filters its own inputs can be emptied by a change
+        # to where those inputs come from, and the failure is invisible --
+        # the count does not drop and nothing turns red.
+        #
+        # Floors, not exact counts: this is here to catch a collection
+        # disappearing, not to freeze the vocabulary against editing.
+        self.assertGreaterEqual(len(vocab.LABELS), 10, "vocabulary collapsed")
+        self.assertGreaterEqual(len(vocab.NOUNS), 8, "noun list collapsed")
+        self.assertGreaterEqual(len(vocab.FEELINGS), 2, "feeling list collapsed")
+        self.assertGreaterEqual(len(vocab.TRIGGERS), 2, "trigger list collapsed")
+        self.assertGreaterEqual(len(vocab.FORMS), len(vocab.LABELS))
+        self.assertEqual(len(vocab.ECHO), len(vocab.LABELS))
+
+    def test_nouns_are_echo_text_not_labels(self):
+        # Passing labels would match nothing: respond_to_keywords upper-cases
+        # the bag and compares against `nouns`, so lower-case labels silently
+        # disable every echo in the system.
+        for noun in self.vocab.NOUNS:
+            self.assertEqual(noun, noun.upper())
+            self.assertIn(noun, self.vocab.ECHO.values())
+
+    def test_kinds_partition_the_vocabulary(self):
+        grouped = (self.vocab.NOUNS + self.vocab.FEELINGS + self.vocab.TRIGGERS)
+        self.assertEqual(sorted(grouped),
+                         sorted(self.vocab.ECHO[l] for l in self.vocab.LABELS))
+
+    def test_every_class_earns_its_slot(self):
+        """Each spotted class alone must produce something better than NONE.
+
+        There is no longer an exception. WANT used to be the documented one --
+        every template behind DOCTOR's (* WANT NEED) class needs an object -- and
+        it has been removed from the vocabulary for exactly that reason, so this
+        now asserts what its name claims with nothing carved out.
+        """
+        doctor = eliza.Doctor(priority=self.vocab.PRIORITY)
+        dead = []
+        for label in self.vocab.LABELS:
+            echo = self.vocab.ECHO[label]
+            reply = doctor.respond_to_keywords([echo], nouns=self.vocab.NOUNS)
+            if reply in rules.NONE:
+                dead.append(label)
+        self.assertEqual(dead, [], "classes that deflect: %s" % dead)
+
+    def test_want_never_reaches_its_own_rule(self):
+        """WANT is dead weight, and this records why rather than hiding it.
+
+        WANT is injected below rather than drawn from the vocabulary, because it
+        is no longer *in* the vocabulary -- it was cut on the strength of this
+        test. Drawing it from LABELS would skip every combination and leave a
+        test that passes while asserting nothing, which is worse than not having
+        one: it is the evidence for a decision, quietly gone.
+
+        DOCTOR's (* WANT NEED) templates all need an object -- "WHY DO YOU WANT
+        4" -- so WANT says nothing alone. And whenever an object *is* spotted,
+        the noun is a noun, so the possessive rules outrank it (PRIORITY puts MY
+        above I) and answer instead. Both halves are individually correct and
+        together they leave no case where the class can speak.
+
+        Checked exhaustively over every bag of one to three vocabulary words
+        containing WANT. If this ever starts failing, WANT has become useful and
+        the comment in vocab.py calling it "first to cut" is out of date.
+        """
+        import itertools
+
+        every = [self.vocab.ECHO[l] for l in self.vocab.LABELS] + ["WANT"]
+        own = set()
+        for pattern, templates in rules.RULES["I"][2]:
+            if any(isinstance(e, tuple) and "WANT" in e for e in pattern):
+                for _kind, payload in templates:
+                    own.add(" ".join(w for w in payload.split() if not w.isdigit()))
+
+        self.assertTrue(own, "the WANT/NEED rule vanished from the script")
+
+        checked = 0
+        for size in (1, 2, 3):
+            for combo in itertools.combinations(every, size):
+                if "WANT" not in combo:
+                    continue
+                checked += 1
+                doctor = eliza.Doctor(priority=self.vocab.PRIORITY)
+                for _ in range(8):
+                    reply = doctor.respond_to_keywords(list(combo),
+                                                       nouns=self.vocab.NOUNS)
+                    bare = " ".join(w for w in reply.split() if w not in every)
+                    self.assertNotIn(bare, own,
+                                     "WANT reached its own rule for %s" % (combo,))
+
+        # The loop *is* the assertion, so it has to be shown to have run. This
+        # test went vacuous once already, when WANT left the vocabulary and the
+        # filter above stopped matching anything.
+        self.assertGreater(checked, 100, "only %d combinations exercised" % checked)
+
+    def test_a_spotted_noun_suppresses_the_feeling_rules(self):
+        """Deliberate, and the reason PRIORITY puts MY above I.
+
+        Every template in DOCTOR's feeling classes is about *you* -- "I AM
+        SORRY TO HEAR YOU ARE 5", "CAN YOU EXPLAIN WHAT MADE YOU 5". So when a
+        noun is also in the bag there is no way to use the feeling without
+        asserting it belongs to the user, and "my brother is sick" would come
+        back as "I AM SORRY TO HEAR YOU ARE SICK".
+
+        The feeling classes still earn their slots: they carry the whole reply
+        whenever no noun is heard, which is most turns.
+        """
+        # No filter here any more: WANT was the one exception and it has been
+        # cut from the vocabulary, so filtering for it would silently drop the
+        # whole loop if FEELINGS were ever reduced to it alone.
+        feelings = list(self.vocab.FEELINGS)
+        self.assertGreaterEqual(len(feelings), 2)
+        for feeling in feelings:
+            alone = eliza.Doctor(priority=self.vocab.PRIORITY)
+            self.assertIn(feeling,
+                          alone.respond_to_keywords([feeling],
+                                                    nouns=self.vocab.NOUNS),
+                          "%s says nothing even alone" % feeling)
+            with_noun = eliza.Doctor(priority=self.vocab.PRIORITY)
+            reply = with_noun.respond_to_keywords(["MOTHER", feeling],
+                                                  nouns=self.vocab.NOUNS)
+            self.assertNotIn("YOU ARE " + feeling, reply)
+            self.assertNotIn("TO BE " + feeling, reply)
+
+    def test_every_noun_is_echoed_by_name(self):
+        doctor = eliza.Doctor(priority=self.vocab.PRIORITY)
+        for noun in self.vocab.NOUNS:
+            for _ in range(6):
+                reply = doctor.respond_to_keywords([noun], nouns=self.vocab.NOUNS)
+                if noun in reply.split():
+                    break
+            else:
+                self.fail("%s is never echoed back" % noun)
+
+    def test_spoken_forms_map_to_a_known_class(self):
+        for form in self.vocab.FORMS:
+            self.assertIn(self.vocab.label_of(form), self.vocab.LABELS, form)
+
+
+class TestAssumptionGuards(unittest.TestCase):
+    """Assumption has to stay assumption, not invention."""
+
+    NOUNS = ("MOTHER", "WORK")
+
+    def test_nothing_heard_means_nothing_assumed(self):
+        doctor = eliza.Doctor()
+        for spotted in ([], ["ZZZZ"], ["AARDVARK", "BANANA"]):
+            self.assertIn(doctor.respond_to_keywords(spotted, nouns=self.NOUNS),
+                          rules.NONE, spotted)
+
+    def test_a_high_ranked_wildcard_rule_cannot_hijack(self):
+        # COMPUTER is rank 50 and its decomposition is a bare "(0)", so it
+        # matches any bag whatsoever. Until _binds_a_heard_word was added, a
+        # bag of {MOTHER} was answered with "DO COMPUTERS WORRY YOU".
+        doctor = eliza.Doctor()
+        for _ in range(6):
+            reply = doctor.respond_to_keywords(["MOTHER"], nouns=self.NOUNS)
+            self.assertNotIn("COMPUTER", reply)
+            self.assertNotIn("MACHINE", reply)
+
+    def test_a_real_keyword_still_wins_over_an_assumed_one(self):
+        doctor = eliza.Doctor()
+        reply = doctor.respond_to_keywords(["COMPUTER"], nouns=self.NOUNS)
+        self.assertTrue("COMPUTER" in reply or "MACHINE" in reply, reply)
+
+    def test_assumed_keywords_never_reach_the_ordered_path(self):
+        # respond_to_words has real word order and must not start inventing
+        # function words it can see are absent.
+        doctor = eliza.Doctor()
+        self.assertIn(doctor.respond("mother"), rules.NONE)
+
+
+class TestTranscript(unittest.TestCase):
+    """Regression against Weizenbaum's own published conversation.
+
+    These lines are quoted in the 1966 CACM paper. If the engine stops
+    reproducing them, something in the substitution or ranking order has moved.
+    """
+
+    def test_canonical_exchanges(self):
+        doctor = eliza.Doctor()
+        for said, expected in (
+            ("Men are all alike", "IN WHAT WAY"),
+            ("They are always bugging us about something or other",
+             "CAN YOU THINK OF A SPECIFIC EXAMPLE"),
+            ("Well, my boyfriend made me come here",
+             "YOUR BOYFRIEND MADE YOU COME HERE"),
+            ("I am unhappy", "I AM SORRY TO HEAR YOU ARE UNHAPPY"),
+        ):
+            self.assertEqual(doctor.respond(said), expected, said)
+
+    def test_person_swap(self):
+        # The script folds the I/you swap into its substitution table, so the
+        # decompositions are written against already swapped text. Getting this
+        # backwards makes ELIZA answer in the wrong person, which is the single
+        # most obvious way for it to look broken.
+        doctor = eliza.Doctor()
+        self.assertEqual(doctor.respond("You are not very aggressive"),
+                         "WHAT MAKES YOU THINK I AM NOT VERY AGGRESSIVE")
+
+
+class TestSentenceCase(unittest.TestCase):
+    def test_capitalises_only_the_start_and_i(self):
+        self.assertEqual(eliza.sentence_case("I AM SORRY TO HEAR YOU ARE SAD"),
+                         "I am sorry to hear you are sad")
+        self.assertEqual(eliza.sentence_case("WHAT MAKES YOU THINK I AM RIGHT"),
+                         "What makes you think I am right")
+
+    def test_handles_contractions(self):
+        self.assertEqual(eliza.sentence_case("I'M SURE ITS NOT PLEASANT"),
+                         "I'm sure its not pleasant")
+
+    def test_empty(self):
+        self.assertEqual(eliza.sentence_case(""), "")
+
+
+class TestRuleData(unittest.TestCase):
+    """The generated module. Guards against a bad regeneration."""
+
+    def test_counts_match_the_published_script(self):
+        templates = [t for _, _, ruleset in rules.RULES.values()
+                     for _, ts in ruleset for t in ts]
+        kinds = {}
+        for kind, _ in templates:
+            kinds[kind] = kinds.get(kind, 0) + 1
+        replies = sum(kinds.get(k, 0)
+                      for k in (rules.CANNED, rules.LITERAL, rules.NOUN, rules.PHRASE))
+        self.assertEqual(replies, 191)
+        self.assertEqual(kinds[rules.CANNED], 79)
+        self.assertEqual(kinds[rules.LITERAL], 12)
+        # NOUN rose from 9 and PHRASE fell from 91 when transitive verbs
+        # joined NOUN_CARRIERS: "WHY DO YOU WANT 4" takes a bare noun as
+        # happily as "WHAT ABOUT 5" does. Echo capacity is the scarce resource,
+        # so that trade is the one worth watching in this number.
+        self.assertEqual(kinds[rules.NOUN], 16)
+        self.assertEqual(kinds[rules.PHRASE], 84)
+        self.assertEqual(len(rules.NONE), 4)
+        self.assertEqual(len(rules.MEMORY), 4)
+        self.assertEqual(len(rules.SUBS), 18)
+
+    def test_every_goto_target_exists(self):
+        for keyword, (rank, goto, ruleset) in rules.RULES.items():
+            if goto:
+                self.assertIn(goto, rules.RULES, keyword)
+            for _, templates in ruleset:
+                for kind, payload in templates:
+                    if kind == rules.GOTO:
+                        self.assertIn(payload, rules.RULES, keyword)
+                    elif kind == rules.PRE:
+                        self.assertIn(payload[1], rules.RULES, keyword)
+
+    def test_every_slot_refers_to_a_real_component(self):
+        for keyword, (rank, goto, ruleset) in rules.RULES.items():
+            for pattern, templates in ruleset:
+                for kind, payload in templates:
+                    if kind in (rules.GOTO, rules.NEWKEY, rules.PRE):
+                        continue
+                    for word in payload.split():
+                        if word.isdigit():
+                            self.assertLessEqual(int(word), len(pattern),
+                                                 "%s: %r" % (keyword, payload))
+
+    def test_classification_is_self_consistent(self):
+        # A CANNED template must have no slots; a PHRASE one must have at least
+        # one that points at a wildcard. Cheap, and it would have caught the
+        # bug where control forms were being counted as canned replies.
+        for keyword, (rank, goto, ruleset) in rules.RULES.items():
+            for pattern, templates in ruleset:
+                for kind, payload in templates:
+                    if kind == rules.CANNED:
+                        self.assertFalse(any(w.isdigit() for w in payload.split()),
+                                         "%s: %r" % (keyword, payload))
+                    elif kind in (rules.LITERAL, rules.NOUN, rules.PHRASE):
+                        self.assertTrue(any(w.isdigit() for w in payload.split()),
+                                        "%s: %r" % (keyword, payload))
+
+    def test_tagged_words_cover_the_family_list(self):
+        family = [w for w, tags in rules.TAGS.items() if "FAMILY" in tags]
+        for word in ("MOTHER", "FATHER", "SISTER", "BROTHER", "WIFE", "CHILDREN"):
+            self.assertIn(word, family)
+
+
+class TestMicroPythonCompatibility(unittest.TestCase):
+    """The engine has to import on a board that has no `re` and no `random`."""
+
+    FORBIDDEN = ("re", "random", "collections", "itertools", "typing",
+                 "dataclasses", "enum", "functools")
+
+    def read(self, name):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "..", "src", name)
+        with open(path) as handle:
+            return handle.read()
+
+    def test_no_host_only_imports(self):
+        for name in ("eliza.py", "eliza_rules.py"):
+            for line in self.read(name).split("\n"):
+                line = line.strip()
+                if not line.startswith(("import ", "from ")):
+                    continue
+                module = line.split()[1].split(".")[0]
+                self.assertNotIn(module, self.FORBIDDEN,
+                                 "%s imports %s" % (name, module))
+
+    def test_engine_imports_only_os_and_its_rules(self):
+        imported = set()
+        for line in self.read("eliza.py").split("\n"):
+            line = line.strip()
+            if line.startswith("import "):
+                imported.add(line.split()[1].split(".")[0])
+        self.assertEqual(imported, {"os", "eliza_rules"})
+
+    def test_cross_compiles_for_micropython(self):
+        """The real check: MicroPython's own compiler accepts both modules.
+
+        Skipped when mpy-cross is not reachable, so a network-less run still
+        passes -- but this is the test that would actually catch a construct
+        CPython allows and the board does not.
+        """
+        import shutil
+        import subprocess
+        import tempfile
+
+        if shutil.which("uvx") is None:
+            self.skipTest("uvx not installed")
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src")
+        with tempfile.TemporaryDirectory() as out:
+            for name in ("eliza.py", "eliza_rules.py"):
+                try:
+                    done = subprocess.run(
+                        ["uvx", "--quiet", "mpy-cross", os.path.join(src, name),
+                         "-o", os.path.join(out, name + ".mpy")],
+                        capture_output=True, timeout=120)
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    self.skipTest("mpy-cross unavailable (%s)" % exc)
+                self.assertEqual(done.returncode, 0,
+                                 "%s: %s" % (name, done.stderr.decode()))
+
+    def test_no_f_strings(self):
+        # The repo formats with %, and MicroPython's f-string support is
+        # partial; staying with % keeps one less thing to discover on device.
+        for name in ("eliza.py", "eliza_rules.py"):
+            self.assertNotIn('f"', self.read(name))
+
+
+class TestRobustness(unittest.TestCase):
+    def test_never_raises_on_arbitrary_input(self):
+        doctor = eliza.Doctor()
+        for text in ("", "   ", ",,,", "?", "BUT", "but but but",
+                     "I", "my my my my", "COMPUTER COMPUTER",
+                     "éèê", "a" * 300,
+                     " ".join(["I", "AM", "SAD"] * 40)):
+            reply = doctor.respond(text)
+            self.assertTrue(isinstance(reply, str) and reply)
+
+    def test_never_raises_on_arbitrary_bags(self):
+        doctor = eliza.Doctor()
+        for bag in ([], [""], ["ZZZZ"], list(rules.RULES),
+                    ["MY"] * 20, ["mother", "my"]):
+            reply = doctor.respond_to_keywords([w for w in bag if w])
+            self.assertTrue(isinstance(reply, str) and reply)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
