@@ -219,8 +219,8 @@ LINES = (
 # settles whether it matters; that is what ears are for, so both go in the
 # shortlist side by side.
 SEAMS = (
-    ("seam-noun-mother", "Why do you say your", "mother"),
-    ("seam-literal-mother", "What else comes to mind when you think of your", "mother"),
+    ("noun-mother", "Why do you say your", "mother"),
+    ("literal-mother", "What else comes to mind when you think of your", "mother"),
 )
 
 XFADE_MS = 10   # over the splice; a hard cut clicks, same reason make_clip fades
@@ -534,6 +534,12 @@ def main():
              "Rendered by `tools/voice_audition.py`. Play a `__REEL.wav` to hear",
              "all five lines in one go; the per-line files sit beside it.", "",
              "    afplay audition/<name>__REEL.wav", "",
+             "The presets are built from the only four `say` controls that turned",
+             "out to work here — pitch base, rate, volume and inserted silence.",
+             "`[[pmod]]` and `[[emph]]` render byte-identical output at every value",
+             "and are not used. `-r` barely slows these voices down (a 3.2x request",
+             "buys 1.33x), so the pacing comes from the inserted pause, not the rate.",
+             "The module docstring has the measurements.", "",
              "## Combinations", "",
              "Median F0 is measured on the first line, not assumed from the",
              "pbas number -- see `median_f0`.", "",

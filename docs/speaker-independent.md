@@ -11,7 +11,11 @@ unknown. It worked, on the one speaker it has been tried on.
 
 > ## The result, in three numbers
 >
-> Trained on 8 `say` voices, tested on the person who will use it:
+> CNN trained on the 8-voice natural tier (4 training voices, **no American
+> voice**), int8, evaluated on 22 real utterances — 10 keywords and 12
+> negatives — from one American speaker through the board's own microphone. DTW
+> control re-run on the later American-inclusive roster. Every figure measured,
+> none estimated.
 >
 > | | top-1 | precision 1.000 at recall |
 > | --- | --- | --- |
@@ -33,10 +37,85 @@ unknown. It worked, on the one speaker it has been tried on.
 > synthetically-trained model recognise a real person at all" — which was the
 > question — and nothing finer.
 >
-> **The DTW row has since been re-run with American voices in the template
-> set.** Its top-1 more than doubled, to 0.700 — level with the CNN — and its
-> precision-1.000 recall stayed at **0.000** in every configuration tried. The
-> gap between the two approaches is not recognition, it is rejection.
+
+## Start here — what to run, in order
+
+Everything below this section is the reasoning. This is the doing. The corpora
+and `build/` are gitignored, so a fresh machine rebuilds them from these
+commands.
+
+```
+# 0. environments (two, deliberately -- TinyMaix's converter needs TF < 2.14)
+uv venv --python 3.11 .venv     && uv pip install --python .venv/bin/python "tensorflow>=2.16,<2.21"
+uv venv --python 3.10 .venv-tm  && uv pip install --python .venv-tm/bin/python "tensorflow-macos==2.13.0" "numpy<2" pillow
+
+# 1. corpus -- roster is committed, audio is not
+python3 tools/train_corpus.py corpus-tts/ --jobs 7        # ~2 h full, resumable
+python3 tools/train_corpus.py corpus-tts/ --index         # rebuild the manifest
+python3 tools/corpus.py corpus-tts --takes takes,takes-oov --check
+
+# 2. the baseline, first -- needs no training
+.venv/bin/python tools/si_dtw_control.py corpus-tts/manifest.json \
+    --voices 5 --takes takes --takes-oov takes-oov
+
+# 3. train, then evaluate against BOTH takes directories
+.venv/bin/python tools/si_train.py corpus-tts/manifest.json --cache <dir> --epochs 80 --out build/si
+.venv/bin/python tools/si_eval.py build/si.tflite corpus-tts/manifest.json --takes <keywords+negatives>
+
+# 4. device artefact
+cd TinyMaix && ../.venv-tm/bin/python -m tools.tflite2tmdl \
+    ../build/si.tflite ../build/si.tmdl int8 1 80,26,1 22
+python3 tools/tmdl_info.py build/si.tmdl --pad
+```
+
+**`--takes` must point at keywords *and* negatives together.** A keywords-only
+directory cannot observe a fire on an ordinary word and reports a flatteringly
+low threshold; see [the real-speaker result](#the-real-speaker-result).
+
+### What is on disk, and what each thing is
+
+| path | what | gitignored |
+| --- | --- | --- |
+| `build/si_real.tflite` `.keras` `.json` | the trained int8 model; the `.json` carries class order, frame count, band count, input shift and quantisation params | yes |
+| `corpus-tts/roster.json` | the frozen voice roster, splits, tiers, fingerprints | **no** |
+| `corpus-tts/` audio + `manifest.json` | the synthetic corpus | yes |
+| `takes/` `takes-oov/` | **the test set** — 10 keywords, 12 negatives, `MIC_GAIN = 1`, no clipping, all endpoint | yes |
+| `takes-clipped/` `takes-oov-clipped/` | same words at `MIC_GAIN = 3`; every take saturates | yes |
+| `takes-contaminated/` `takes-oov-contaminated/` | the original captures, with a chirp tail in the first 300 ms | yes |
+| `corpus-tts/_stale/` | quarantined files from a superseded roster. **Never read these.** | yes |
+
+The three capture conditions are kept deliberately: they are what made the
+chirp and the clipping answerable as controlled comparisons rather than as
+inferences.
+
+### The next thing to do, and it is not architectural
+
+**More real speech, from a second speaker.** Every conclusion here rests on ten
+keywords and twelve negatives from one person in one room. Three takes per word
+plus thirty negatives would turn an indication into a measurement; a second
+speaker would turn it into a claim about people rather than about one person.
+No change to the model is worth as much.
+
+## The finding: rejection, not recognition
+
+DTW and the CNN reach **identical top-1 on the real speaker — 0.700 each** — and
+only one of them can be deployed, because only one can decline to answer. At
+every threshold tried, DTW's first correct fire arrives no earlier than its
+first false one; the CNN has a setting where it catches half the keywords and
+fires wrongly on nothing at all, keywords and negatives alike.
+
+That is the whole result, and it is not the one the experiment set out to find.
+The question was whether synthetic voices transfer to a human. They do, for both
+approaches, about equally. What separates the two is that a trained `unknown`
+class can represent "none of these" and a nearest-neighbour distance cannot —
+`argmin` always returns a word.
+
+`docs/speech.md` argued exactly this from first principles, before any of it was
+measured: *"Rejection is a feature, not a safety net"*, and the honest metric is
+precision and recall separately because a single accuracy figure averages
+together the one error that matters and the one that does not. This is that
+argument turning into a number. Two systems, the same accuracy, opposite
+verdicts.
 
 ## The endpointer looked broken, and was being fed a chirp
 
@@ -643,30 +722,32 @@ cd TinyMaix && python -m tools.tflite2tmdl in.tflite out.tmdl int8 1 80,26,1 22
   a representative set calibrated on clean synthetic features could let real
   ones wrap into confident nonsense. A host-side counter for this is not built.
 
-## Resuming
+## Resuming — the rest of the list
 
-The experiment answered its question. What is left is hardening it.
+[Start here](#start-here--what-to-run-in-order) has the commands and the first
+priority. The remainder, in order of value:
 
-1. **More real speech, and it is the cheapest win available.** Ten keywords and
-   twelve negatives from one speaker gave precision 1.000 at recall 0.500. Three
-   takes per word plus thirty negatives would turn that from an indication into
-   a measurement, and a second speaker would turn it into a claim about people
-   rather than about one person.
-2. **Generate the rest of the corpus.** Only the 8 natural-tier voices were
-   built (~9000 files, 8 minutes). The 16-voice expressive family and the
-   novelty tier are ~2 hours more and the model currently trains on **4 voices**.
-   More training voices is the single biggest lever left.
-3. **Get the model onto the board.** `build/si_real.tflite` converts; run
-   `tools/tmdl_info.py --pad` and hand it to the device side with a handful of
-   `uint8` patches. The import question is still open.
-4. **Then tune for precision.** Sweep `--unknown-weight`, `--width` and
-   `--arch`; the operating point matters more than the accuracy, and none of
-   these has been swept even once against the real corpus.
-5. **Add clipping to the channel model.** This microphone no longer saturates,
-   but a louder or closer speaker will, and the corpus has no example of it.
+2. **Generate the rest of the corpus.** Only the natural tier was ever built.
+   The 16-voice expressive family and the novelty tier are ~2 hours more, and
+   the model that produced the headline trained on **4 voices**. More training
+   voices is the largest untested lever.
+3. **Retrain on the rebuilt roster and re-run the evaluation.** The split now
+   holds an American voice of each gender in **test** (Allison, Nathan, both
+   Enhanced), so generalisation to an unseen American speaker becomes measured
+   rather than assumed. The CNN numbers in this document predate that split and
+   are labelled as such.
+4. **Get the model onto the board.** `build/si_real.tflite` converts; run
+   `tools/tmdl_info.py --pad` and hand it over with a handful of `uint8`
+   patches. Whether `emlearn_cnn_int8` imports at all is still unanswered.
+5. **Then tune for precision.** Sweep `--unknown-weight`, `--width` and
+   `--arch`. The operating point matters more than the accuracy and none of
+   these has been swept once against the real corpus.
+6. **Add clipping to the channel model.** This microphone no longer saturates
+   at `MIC_GAIN = 1`, but a louder or closer speaker will, and the corpus has
+   no example of saturation.
 
 **The decision rule, stated in advance and now settled:** the CNN had to beat
-the DTW control's precision-1.000 recall on real speech. It did — 0.500 against
-0.000 — so the speaker-independent path is worth pursuing and "ship DTW with
-synthetic templates" is not a live option, because DTW with synthetic templates
-does not work on a person at all.
+the DTW control's precision-1.000 recall on real speech. It did — **0.500
+against 0.000**, at identical top-1 — so the speaker-independent path is worth
+pursuing, and "ship DTW with synthetic templates" is not a live option. Not
+because DTW recognises worse, but because it cannot decline to answer.

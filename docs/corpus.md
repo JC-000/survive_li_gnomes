@@ -1,5 +1,58 @@
 # The synthetic corpus, and what its split can and cannot prove
 
+> ## State as of 2026-08-18, end of session
+>
+> **The tree is coherent and `tools/corpus.py corpus-tts --takes takes,takes-oov
+> --check` exits 0.** Anything measured against it is valid. It is *partial*,
+> and what is missing is named below rather than left to be discovered.
+>
+> | | |
+> | --- | --- |
+> | Rendered | **16030 utterances, 14 voices** — 8 train, 3 val, 3 test |
+> | Manifest | `corpus-tts/manifest.json`, indexes all 16030 |
+> | Leak check | passes: no voice or family spans two splits |
+> | `unknown` class | **complete** — 734 per voice, every voice |
+> | Human held out | 22 (`takes/` 10 keywords, `takes-oov/` 12 negatives) |
+>
+> Rendered voices, all with the full 330 word / 734 unknown / 76 variant plan:
+>
+> | split | voices |
+> | --- | --- |
+> | train | Bruce, Samantha, Joelle (Enh), Noelle (Enh), Daniel, Tara, Tessa, Eddy (UK) |
+> | val | Aman, Karen, Moira |
+> | test | **Allison (Enh, en_US f)**, **Nathan (Enh, en_US m)**, Rishi |
+>
+> Test holds an American voice of each gender, which is what three roster
+> rebuilds were for. American voices are in train too, which the first roster
+> did not manage at all.
+>
+> ### What is missing, in the order worth doing it
+>
+> 1. **The roster is one generation behind the installed voices.** `Ava
+>    (Premium)`, `Evan (Enhanced)`, `Susan (Enhanced)`, `Nicky` and
+>    `Samantha (Enhanced)` installed after it was frozen and are **not in it**.
+>    Evan matters most: it is a second American *male* natural voice, which
+>    would allow one in train and one held out. Re-run
+>    `python3 tools/say_voices.py freeze corpus-tts/roster.json`, then
+>    `python3 tools/train_corpus.py corpus-tts/ --index` (which **re-files**
+>    existing audio rather than re-rendering it), then render the new voices.
+>    Note the rebuild will drop Compact `Samantha` in favour of
+>    `Samantha (Enhanced)` and orphan its ~1140 files to `_stale/`.
+> 2. **The 16-voice expressive family and 13 novelty voices are unrendered**
+>    except Eddy (UK). That is ~28 voices × 1140 = ~32000 files, about 1.8
+>    hours. They train only, so they cannot affect the split.
+> 3. **`Aman` carries 70 files more than the plan** — 764 unknown and 116
+>    variant against 734 and 76 — left over from an earlier plan generation at
+>    rates the current rotation no longer picks. Harmless (valid audio, correct
+>    labels, no leak) but it breaks the property that every voice contributes
+>    identically. `--index` does not prune by `(text, rate)`, only by text.
+>
+> **A clean rebuild is a reasonable alternative to all three** and is about 2.5
+> hours: `rm -rf corpus-tts` (mind the zsh glob trap below), re-freeze, render.
+> Nothing in the tree is precious — it is entirely reproducible from
+> `roster.json` plus the tools.
+
+
 The training data for the speaker-independent recogniser. It is built from
 macOS `say` voices, because the alternative is recording ten people for two to
 three hours each and Google Speech Commands overlaps our vocabulary by exactly
@@ -46,7 +99,9 @@ distinct speaker, and the gap is large:
 | **`natural`, modern concatenative** | **13** | Allison, Nathan, Joelle, Noelle (Enhanced en_US), Samantha, Bruce, Daniel, Karen, Moira, Tessa, Rishi, Aman, Tara |
 
 Locales: 27 en_US, 9 en_GB, 3 en_IN, 1 each en_AU / en_IE / en_ZA. Qualities:
-4 Enhanced, 38 Compact, no Premium.
+4 Enhanced, 38 Compact — **in the frozen roster**. `Ava (Premium)` has since
+installed and is the first of that tier on this machine; see the state banner
+at the top.
 
 **Thirteen**, of which four are American Enhanced voices downloaded partway
 through the session. That is how many genuinely human-sounding, mutually
@@ -349,6 +404,14 @@ clear it was written as `rm -rf a b c corpus-tts/_raw.*.wav`, the glob matched
 nothing, and **zsh aborts the whole command on a failed glob** rather than
 passing it through as bash would. The output was one line — `no matches found`
 — which reads as a warning and was not. Nothing was deleted.
+
+`prefer_quality()` dropping the Compact twin is worth noting as a case where
+one invariant paid off twice: grouping by **name stem** was written for locale
+variants (`Flo (UK)` / `Flo (US)`) and turned out to handle quality tiers
+(`Samantha` / `Samantha (Enhanced)`) for free, before that case existed.
+`assert_one_split_per_stem()` restates the guarantee as an assertion anyway —
+not redundant, because the guarantee is one edit to `name_stem` away from
+disappearing silently.
 
 What `--index` cannot recover is the per-utterance augmentation: gain, tilt,
 SNR and noise source are choices, not properties of the samples, so they are
