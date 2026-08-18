@@ -42,6 +42,7 @@ sys.path.insert(0, HERE)
 
 import corpus  # noqa: E402
 import say_corpus as sc  # noqa: E402
+import say_voices as sv  # noqa: E402
 import train_corpus as tc  # noqa: E402
 import vocab  # noqa: E402
 
@@ -327,8 +328,99 @@ def test_rate_is_enforced(tmp):
         check("24 kHz audio is refused", "24000" in str(exc), str(exc))
 
 
+def test_voice_identity():
+    """The split has leaked three times, each time a different sense of "same".
+
+    All three are here because none of them errors: a leaked split reports a
+    better number, not a failure. In order of discovery --
+
+    1. `say -v <name>` renders an *uninstalled* voice in the default voice and
+       returns 0, so several names become one speaker. Caught by digest.
+    2. `Flo (English (UK))` and `Flo (English (US))` are one voice at two
+       accents. Caught by name stem.
+    3. `Samantha` and `Samantha (Enhanced)` are one voice at two quality
+       tiers -- and they render *differently*, so the digest check passes them.
+       Caught by name stem too, which is why that mechanism is the one worth
+       guarding.
+    """
+    print("voice identity")
+    check("a quality tier is stripped from the identity",
+          sv.name_stem("Samantha (Enhanced)") == "Samantha",
+          sv.name_stem("Samantha (Enhanced)"))
+    check("a locale variant is stripped from the identity",
+          sv.name_stem("Flo (English (UK))") == "Flo")
+    check("quality is parsed from the name",
+          (sv.quality_of("Allison (Enhanced)"), sv.quality_of("Samantha"))
+          == ("Enhanced", "Compact"))
+
+    # A Compact voice superseded by an Enhanced install of the same voice, and
+    # a locale pair that must NOT be collapsed.
+    voices = [{"name": "Samantha", "locale": "en_US"},
+              {"name": "Samantha (Enhanced)", "locale": "en_US"},
+              {"name": "Flo (English (UK))", "locale": "en_GB"},
+              {"name": "Flo (English (US))", "locale": "en_US"}]
+    kept, dropped = sv.prefer_quality(voices)
+    names = sorted(v["name"] for v in kept)
+    check("the Compact twin is dropped for the Enhanced one",
+          dropped == ["Samantha"], dropped)
+    check("...and the locale pair is kept",
+          names == ["Flo (English (UK))", "Flo (English (US))",
+                    "Samantha (Enhanced)"], names)
+
+    try:
+        sv.assert_distinct([{"name": "A", "pcm_sha256": "x"},
+                            {"name": "B", "pcm_sha256": "x"}])
+        check("identical renders raise", False, "no exception")
+    except ValueError as exc:
+        check("identical renders raise", "falling back" in str(exc), str(exc))
+    check("distinct renders do not",
+          sv.assert_distinct([{"name": "A", "pcm_sha256": "x"},
+                              {"name": "B", "pcm_sha256": "y"}]) == 2)
+
+    try:
+        sv.assert_one_split_per_stem(
+            [{"name": "Samantha", "split": "train"},
+             {"name": "Samantha (Enhanced)", "split": "test"}])
+        check("one speaker in two splits raises", False, "no exception")
+    except ValueError as exc:
+        check("one speaker in two splits raises",
+              "two splits" in str(exc), str(exc))
+    check("the same speaker in one split is fine",
+          sv.assert_one_split_per_stem(
+              [{"name": "Samantha", "split": "train"},
+               {"name": "Samantha (Enhanced)", "split": "train"}]) is None)
+
+
+def test_live_roster():
+    """Whatever roster is on disk must satisfy the invariants. Skipped if absent."""
+    path = os.path.join(ROOT, "corpus-tts", "roster.json")
+    if not os.path.exists(path):
+        print("live roster: none on disk, skipped")
+        return
+    print("live roster")
+    with open(path) as h:
+        roster = json.load(h)
+    voices = roster["voices"]
+    try:
+        n = sv.assert_distinct(voices)
+        check("every voice renders distinctly", n == len(voices))
+    except ValueError as exc:
+        check("every voice renders distinctly", False, str(exc))
+    try:
+        sv.assert_one_split_per_stem(voices)
+        check("no speaker spans two splits", True)
+    except ValueError as exc:
+        check("no speaker spans two splits", False, str(exc))
+    straddle = sv.check_straddle(voices, roster.get("close_pairs", []))
+    check("no close pair straddles the split", not straddle, straddle)
+    held = set(v["tier"] for v in voices if v["split"] in ("val", "test"))
+    check("only natural voices are held out", held <= {"natural"}, sorted(held))
+
+
 def main():
     test_derived_from_vocab()
+    test_voice_identity()
+    test_live_roster()
     test_plan_shape()
     test_pick_is_uniform()
     tmp = tempfile.mkdtemp(prefix="corpus-test-")

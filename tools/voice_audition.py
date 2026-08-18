@@ -158,6 +158,8 @@ PRESETS = (
     Preset("p0-neutral", note="control: no prosody markup at all"),
     Preset("p1-lower", pbas=42, note="pitch only, -2.5 st"),
     Preset("p2-slow", rate=100, note="rate only -- note how little it does"),
+    Preset("p3-light", pbas=43, rate=100, pause_ms=220,
+           note="half p3's pitch drop, for a voice that already starts low"),
     Preset("p3-warm", pbas=42, rate=100, pause_ms=220,
            note="the core recipe: -2.5 st, slower, one breath"),
     Preset("p4-darker", pbas=40, rate=100, pause_ms=260,
@@ -166,16 +168,38 @@ PRESETS = (
            note="everything at once, including a lead-in breath of silence"),
 )
 
-# Voices. Only two of the eleven the user asked for are actually installed --
-# see the report; `say -v` renders an uninstalled voice in the system default
-# and exits 0, so this list is checked against distinct MD5s before use.
-PRIMARY = "Allison (Enhanced)"
+# Voices.
+#
+# The `(Enhanced)` suffix is load-bearing: `Samantha` and `Samantha (Enhanced)`
+# are both installed here and are different voices (170.9 Hz vs 180.7 Hz, and
+# they do not share an MD5). Ask for the bare name and you get the compact one,
+# which is the tier this exercise exists to avoid. `say -v` also renders an
+# *uninstalled* name in the system default and exits 0, so `check_distinct`
+# runs before anything else.
+#
+# Susan carries the prosody sweep because it has the lowest natural pitch of
+# any female voice installed -- measured on "Tell me more about your family",
+# no markup:
+#
+#     Susan (Enhanced)    162.1 Hz      Joelle (Enhanced)    237.1 Hz
+#     Samantha (Enhanced) 180.7 Hz      Noelle (Enhanced)    268.9 Hz
+#     Allison (Enhanced)  200.5 Hz      (Nathan, male        107.0 Hz)
+#
+# That matters because [[pbas]] is the control that costs naturalness -- it
+# shifts pitch without moving the formants with it, so the further a voice is
+# dragged the more it stops sounding like a woman speaking low and starts
+# sounding like a recording slowed down. A voice that starts in the target
+# register needs the least of it. This is a stated criterion, not a verdict:
+# every candidate also appears at p3-warm so it can be overruled by ear.
+PRIMARY = "Susan (Enhanced)"
 SHORTLIST = (
-    (PRIMARY, ("p0-neutral", "p1-lower", "p2-slow", "p3-warm", "p4-darker", "p5-intimate")),
-    ("Samantha", ("p0-neutral", "p3-warm", "p5-intimate")),
-    ("Karen", ("p3-warm",)),       # en_AU
-    ("Moira", ("p3-warm",)),       # en_IE
-    ("Tessa", ("p3-warm",)),       # en_ZA
+    (PRIMARY, ("p0-neutral", "p1-lower", "p2-slow", "p3-light", "p3-warm",
+               "p4-darker", "p5-intimate")),
+    ("Allison (Enhanced)", ("p0-neutral", "p3-warm")),
+    ("Samantha (Enhanced)", ("p3-warm",)),
+    ("Joelle (Enhanced)", ("p3-warm",)),
+    ("Noelle (Enhanced)", ("p3-warm",)),
+    ("Moira", ("p3-warm",)),       # en_IE, for an accent that is not American
 )
 
 # Five real replies, one of each kind the corpus has to cover. Not invented
@@ -356,10 +380,18 @@ def build_shortlist(outdir):
 def corpus_lines():
     """Every line the device would have to ship, by how it gets built.
 
-    Returns (whole, pieces, medial). `whole` is the fully expanded corpus --
-    every slot filled, every combination its own clip, no seams anywhere.
-    `pieces` is the same corpus built by concatenation: stems, plus the filler
-    words they splice onto the end.
+    Returns (canned, whole, pieces, medial).
+
+    `canned` is the 79 replies with no slot at all, plus the four deflections
+    and the greeting. Those ship as whole sentences under every plan, because
+    there is nothing in them to assemble.
+
+    `whole` is the fully expanded corpus -- `canned` plus every slotted
+    template with every filler it can reach, each combination its own clip, no
+    seams anywhere. `pieces` is what those slotted templates cost instead if
+    they are assembled: the stems, plus the filler words spliced onto them.
+    The shipping corpus is therefore `canned` + `whole` or `canned` + `pieces`,
+    never `pieces` alone.
 
     `medial` is the part that spoils the neat version of the story. Not every
     slot is sentence-final: "DOES THINKING OF _ BRING ANYTHING ELSE TO MIND"
@@ -424,7 +456,7 @@ def corpus_lines():
         expand(text, nouns)
 
     pieces = sorted(set(p for p in pieces if p)) + nouns + feelings
-    return whole, pieces, medial
+    return canned, whole, pieces, medial
 
 
 # Bytes per second of mono audio, by candidate on-device format. The first row
@@ -448,7 +480,7 @@ def budget(outdir, voice, preset):
     real voice at a real prosody. Rendering ~400 lines takes a couple of
     minutes and settles it.
     """
-    whole, pieces, medial = corpus_lines()
+    canned, whole, pieces, medial = corpus_lines()
     scratch = os.path.join(outdir, "budget-scratch")
     os.makedirs(scratch, exist_ok=True)
 
@@ -465,8 +497,15 @@ def budget(outdir, voice, preset):
                 print("    %s %d/%d" % (tag, i, len(lines)), flush=True)
         return seconds
 
-    return ((len(whole), total_seconds(whole, "whole")),
-            (len(pieces), total_seconds(pieces, "pieces")),
+    # `whole` already contains `canned`, so the canned pass is charged once and
+    # subtracted rather than rendered twice.
+    canned_s = total_seconds(canned, "canned")
+    slotted = [line for line in whole if line not in set(canned)]
+    slotted_s = total_seconds(slotted, "slotted")
+    pieces_s = total_seconds(pieces, "pieces")
+    return ((len(canned), canned_s),
+            (len(whole), canned_s + slotted_s),
+            (len(canned) + len(pieces), canned_s + pieces_s),
             len(medial))
 
 
@@ -518,24 +557,31 @@ def main():
     if args.budget:
         preset = {p.name: p for p in PRESETS}["p3-warm"]
         print("measuring corpus budget for %s / p3-warm..." % PRIMARY)
-        (n_whole, s_whole), (n_piece, s_piece), n_medial = \
+        (n_canned, s_canned), (n_whole, s_whole), (n_asm, s_asm), n_medial = \
             budget(args.outdir, PRIMARY, preset)
         lines += ["", "## Corpus budget — %s, p3-warm" % PRIMARY, "",
                   "Measured, not estimated: every line below was rendered and its",
                   "`say` padding trimmed before counting.", "",
-                  "**whole** fills every slot and ships each combination as its own",
-                  "clip, so nothing is ever spliced. **assembled** ships stems and",
-                  "filler words and joins them on the device.", "",
+                  "**canned** is the slotless replies alone -- the floor, and a",
+                  "device that shipped only these would still hold a conversation,",
+                  "because a reply it cannot speak can fall through to a deflection",
+                  "exactly as an unrecognised word already does. **whole** adds every",
+                  "slotted template with every filler, each its own clip, spliced",
+                  "nowhere. **assembled** adds them as stems plus filler words,",
+                  "joined on the device.", "",
                   "| | Clips | Seconds |", "| --- | --- | --- |",
-                  "| whole sentences | %d | %.1f |" % (n_whole, s_whole),
-                  "| stems + fillers | %d | %.1f |" % (n_piece, s_piece), "",
-                  "| Format | whole | assembled |", "| --- | --- | --- |"]
+                  "| canned only | %d | %.1f |" % (n_canned, s_canned),
+                  "| + slots, whole | %d | %.1f |" % (n_whole, s_whole),
+                  "| + slots, assembled | %d | %.1f |" % (n_asm, s_asm), "",
+                  "| Format | canned | whole | assembled |",
+                  "| --- | --- | --- | --- |"]
         for label, bps in FORMATS:
             def cell(seconds):
                 size = seconds * bps
                 mark = "" if size <= FILESYSTEM else " **over**"
                 return "%.2f MB%s" % (size / 1024 / 1024, mark)
-            lines.append("| %s | %s | %s |" % (label, cell(s_whole), cell(s_piece)))
+            lines.append("| %s | %s | %s | %s |"
+                         % (label, cell(s_canned), cell(s_whole), cell(s_asm)))
         lines += ["", "Against a %d MB filesystem, and that is before the code, the"
                   % (FILESYSTEM // 1024 // 1024),
                   "DTW templates and the existing shake/fart/laugh clips.", "",

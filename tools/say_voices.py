@@ -230,6 +230,57 @@ def enumerate_voices():
     return voices, collisions
 
 
+def prefer_quality(voices):
+    """One entry per (name stem, locale), keeping the best quality installed.
+
+    `Samantha` and `Samantha (Enhanced)` are both installed and both en_US.
+    They are **the same speaker** at two quality tiers, and they render
+    differently -- different model, different bytes -- so `assert_distinct`
+    passes them as two voices and would go on passing them. Distinctness is not
+    identity: two renders can differ byte-for-byte and still be one speaker.
+
+    `group_families` already unions them, because `name_stem` strips the
+    parenthesis, so they cannot straddle the split. Dropping the Compact one
+    anyway does two further things: it stops the corpus carrying the same
+    speaker twice with half the data at the worse quality, and it honours the
+    instruction to prefer Enhanced and Premium, which are much better models.
+
+    Keyed by stem **and locale**, so `Flo (English (UK))` and
+    `Flo (English (US))` both survive -- those differ by accent, not by tier,
+    and the measured distance between such a pair (61.5..73.3) is far larger
+    than nothing.
+    """
+    best = {}
+    for v in voices:
+        key = (name_stem(v["name"]), v["locale"])
+        rank = QUALITY_RANK.get(quality_of(v["name"]), 1)
+        if key not in best or rank > best[key][0]:
+            best[key] = (rank, v)
+    kept = [v for _, v in best.values()]
+    dropped = [v["name"] for v in voices if v not in kept]
+    kept.sort(key=lambda v: v["name"])
+    return kept, sorted(dropped)
+
+
+def assert_one_split_per_stem(voices):
+    """No speaker identity may appear in two splits. Raises.
+
+    A direct guard on the thing `group_families` is supposed to guarantee, kept
+    separate from it so a future change to the grouping cannot quietly remove
+    the property. Name stem is the identity: locale variants and quality tiers
+    of one voice all share it.
+    """
+    seen = {}
+    for v in voices:
+        seen.setdefault(name_stem(v["name"]), set()).add(v["split"])
+    bad = dict((k, sorted(s)) for k, s in seen.items() if len(s) > 1)
+    if bad:
+        raise ValueError(
+            "the same speaker is in two splits: %s"
+            % "; ".join("%s in %s" % (k, " and ".join(s))
+                        for k, s in sorted(bad.items())))
+
+
 def say_pcm(text, voice, rate, path):
     """Synthesise to `path` and return the samples.
 
@@ -661,6 +712,10 @@ def build_roster(scratch, speech_only=True, weights=(3, 1, 1), verbose=True):
                  % (len(collisions), ", ".join(sorted(set(collisions))))
                  if collisions else ""),
               file=sys.stderr)
+    voices, superseded = prefer_quality(voices)
+    if verbose and superseded:
+        print("superseded by a better-quality install of the same voice: %s"
+              % ", ".join(superseded), file=sys.stderr)
     probe(voices, scratch, verbose)
 
     dropped = []
@@ -688,6 +743,7 @@ def build_roster(scratch, speech_only=True, weights=(3, 1, 1), verbose=True):
     for v in voices:
         v["split"] = next(f["split"] for f in families
                           if v["name"] in f["voices"])
+    assert_one_split_per_stem(voices)
     twins = find_twins(voices, family_of)
     unmet = check_requirements(voices)
     straddle = check_straddle(voices, twins)
@@ -704,6 +760,7 @@ def build_roster(scratch, speech_only=True, weights=(3, 1, 1), verbose=True):
         "tiers": list(TIERS),
         "dropped_not_speech": dropped,
         "duplicate_names": sorted(set(collisions)),
+        "superseded_by_quality": superseded,
         "voices": voices,
         "families": families,
         "close_pairs": twins,
@@ -718,6 +775,9 @@ def print_report(roster, full=False):
     if roster["dropped_not_speech"]:
         print("dropped, median word > %d ms (singing, not speaking): %s"
               % (SPEECH_MAX_MS, ", ".join(roster["dropped_not_speech"])))
+    if roster.get("superseded_by_quality"):
+        print("dropped, a better quality tier of the same voice is installed: %s"
+              % ", ".join(roster["superseded_by_quality"]))
     if roster["duplicate_names"]:
         print("unaddressable duplicate names in `say -v '?'`: %s"
               % ", ".join(roster["duplicate_names"]))

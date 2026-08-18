@@ -27,41 +27,58 @@ python3 tools/train_corpus.py corpus-tts/ --jobs 7
 python3 tools/corpus.py corpus-tts/ --check
 ```
 
-## 184 voices are not 184 speakers. They are 8.
+## 188 voices are not 188 speakers. They are 13.
 
 This is the headline finding and it sets the ceiling on the whole approach.
 
-`say -v '?'` lists **184 voices**, of which **43 are English**. Every one of
-those 43 renders distinct audio — *measured*, 43 distinct SHA-256 digests over
-the probe utterance, no collisions. But distinct audio is not a distinct
-speaker, and the gap is large:
+`say -v '?'` lists **188 voices**, of which **48 are English**. Every one of
+the 42 usable ones renders distinct audio — *measured*, 42 distinct SHA-256
+digests over the probe utterance, no collisions. But distinct audio is not a
+distinct speaker, and the gap is large:
 
 | | voices | |
 | --- | --- | --- |
-| listed, English locales | 43 | |
+| listed, English locales | 48 | |
 | — singing rather than speaking | −6 | Bells, Cellos, Organ, Jester, Bad News, Good News |
-| **usable** | **37** | in **14** prosody families |
+| **usable** | **42** | in **19** prosody families |
 | — `expressive`, one synthesiser | 16 | the iOS voices, 8 names × en_GB/en_US |
 | — `novelty`, formant and effect | 13 | Fred, Zarvox, Bahh, Whisper, Boing … |
-| **`natural`, modern concatenative** | **8** | Samantha, Daniel, Karen, Moira, Tessa, Rishi, Aman, Tara |
+| **`natural`, modern concatenative** | **13** | Allison, Nathan, Joelle, Noelle (Enhanced en_US), Samantha, Bruce, Daniel, Karen, Moira, Tessa, Rishi, Aman, Tara |
 
-**Eight.** That is how many genuinely human-sounding, mutually independent
-English voices this Mac has, and it is the number the experiment is really
-running on. Everything else is either one synthesiser wearing sixteen timbres
-or a 1990s formant synthesiser.
+Locales: 27 en_US, 9 en_GB, 3 en_IN, 1 each en_AU / en_IE / en_ZA. Qualities:
+4 Enhanced, 38 Compact, no Premium.
+
+**Thirteen**, of which four are American Enhanced voices downloaded partway
+through the session. That is how many genuinely human-sounding, mutually
+independent English voices this Mac has, and it is the number the experiment is
+really running on. Everything else is either one synthesiser wearing sixteen
+timbres or a 1990s formant synthesiser.
+
+It was **eight** before the download, all Compact, and only one of them en_US.
+The roster is worth rebuilding whenever more voices land: `say -v '?'` grew
+from 184 entries to 188 during this session as Enhanced voices finished
+installing, and Ava, Evan, Nicky, Susan, Tom and Zoe were still downloading
+when this was written. **Rebuild the roster before trusting the split**, and
+note that doing so re-files the corpus rather than re-rendering it — see
+`--index` below.
 
 ### How the tiers are decided, without listening to anything
 
 Every rule is a measurement, because "sounds robotic" is not reproducible.
 
 **Singing vs speaking** — median duration of five probe words at 175 wpm.
-Measured over all 43: every voice that speaks lands in **407–911 ms**, every
-voice that sings in **1185–1940 ms**. The cut at 1050 sits in empty space. It
-has to be the *median*: the iOS voices take 1113 ms over `computer` alone.
+Measured: every voice that speaks lands in **407–911 ms**, every voice that
+sings in **1185–1940 ms**. The cut at 1050 sits in empty space. It has to be
+the *median*: the iOS voices take 1113 ms over `computer` alone.
 
-**`natural`** — a prosody family of one *and* a median word ≤ 600 ms. Selects
-exactly the eight above; their medians run 470–539 ms against the next voice up
-at 703 (Whisper) and Boing at 750, so the cut sits in a 160 ms gap.
+**`natural`** — a prosody family of one *and* a median word ≤ 600 ms. On the
+pre-download roster this selected exactly the eight modern voices, with a
+160 ms gap either side. It is a **weaker rule now**: Bruce, a 1990s MacinTalk
+voice, medians 564 ms and is admitted, and Enhanced arrivals sit at 497–564 ms
+alongside it. Bruce is en_US and male and was the only such voice for a while,
+so he earns his place in training regardless — but the tier boundary is no
+longer the clean empty band it was, and a future rule should probably not rest
+on duration alone.
 
 **`expressive`** — a family whose members span more than one locale. Exactly
 one family does.
@@ -118,24 +135,69 @@ in the background. `say -v` takes a name, so the second of a colliding pair is
 **unaddressable**. That is why `roster.json` is frozen to disk and the builder
 reads *that*, never the live list.
 
-## The split
+## The split is chosen against requirements, not by share
 
 **Whole voices are held out, never individual utterances** — and the unit is
 the *family*, not the voice name.
+
+The natural tier is assigned against explicit requirements, because a 3:1:1
+greedy pass satisfies them only by luck, and the first roster that used one
+produced a split with **no American English voice in training at all**: every
+natural training voice was en_IN, en_IE or en_ZA, and the only natural en_US
+voice sat in `val`. The user speaks American English. So the model and the DTW
+control had never heard the accent they were tested on, and **an accent gap
+could have been measured and reported as a speaker gap.**
+
+The requirements, in the order they are satisfied:
+
+1. **An en_US voice of each gender held out for test** — best quality first,
+   so generalisation to an unseen American speaker is measured rather than
+   assumed. Test is where two or three voices carry the whole claim; train has
+   thirty others to dilute a weak one.
+2. **An en_US voice of each gender in train** — train on the accent that will
+   be spoken to it.
+3. **Both genders in train**, filled from other locales if en_US cannot: the
+   user is male and wants the toy to work for women too, and an accented voice
+   of the right gender beats no voice of that gender.
+4. **Both genders in val and test.**
+5. Whatever remains, 3:1:1.
+
+Gender is **curated** in `VOICE_GENDER`, not measured — `say -v '?'` reports a
+locale and nothing else. Anything absent is `unknown` and satisfies no
+constraint, because a requirement met by a guess is worse than one reported
+unmet. The iOS expressive voices are deliberately absent from the table: Apple
+does not present Eddy, Flo, Reed, Rocko, Sandy or Shelley as gendered.
+
+Quality comes from the name — `Allison (Enhanced)`. Enhanced and Premium are
+much better models than the Compact default, so they are spent on the held-out
+American slots first. `name_stem` collapses `Allison (Enhanced)` onto
+`Allison`, so a voice installed at two qualities is one speaker for splitting.
+
+### Requirements that cannot be met are reported, not worked around
+
+`check_requirements()` returns complaints and `roster.json` carries them in
+`unmet_requirements`. Some are unsatisfiable by any assignment: with exactly
+one en_US male voice installed, it can be trained on or held out, never both.
+Picking one silently and calling the split satisfied would be the worse
+failure. Currently unmet: **no en_US voice in val** — all four natural en_US
+voices are spent on train and test, which is the right priority.
 
 `group_families` takes connected components over three relations: same prosody
 (every probe word within 8 ms), same name stem (`Flo (UK)`/`Flo (US)`), and
 twin timbre (fingerprint < 25). Any one of them means one speaker.
 
-| split | voices | families | tier |
-| --- | --- | --- | --- |
-| train | 33 | 10 | 16 expressive, 13 novelty, 4 natural |
-| val | 2 | 2 | Daniel, Samantha |
-| test | 2 | 2 | Karen, Tara |
+| split | voices | natural voices |
+| --- | --- | --- |
+| train | 36 | Bruce (en_US m), Samantha (en_US f), Joelle (en_US f, Enh), Noelle (en_US f, Enh), Daniel (en_GB m), Tara (en_IN f), Tessa (en_ZA f) |
+| val | 3 | Aman (en_IN m), Karen (en_AU f), Moira (en_IE f) |
+| test | 3 | **Allison (en_US f, Enh)**, **Nathan (en_US m, Enh)**, Rishi (en_IN m) |
 
-Only `natural` voices are held out. With `takes/` empty, the held-out voices
-are the *entire* evidence for generalisation, and a test split containing Bahh
-predicts how the model does on a sheep noise.
+Only `natural` voices are held out; `expressive` and `novelty` always train. The
+held-out voices are the entire synthetic evidence for generalisation, and a
+test split containing Bahh predicts how the model does on a sheep noise.
+
+Test holds an American voice of **each** gender, both Enhanced, which is the
+arrangement the whole roster rebuild was for.
 
 ### The first split was dishonest, and the failure is worth keeping
 
@@ -297,8 +359,11 @@ them, replacing nulls with the real values for anything it re-renders.
 
 ## What is in it
 
-37 voices × 1140 utterances = **42180 files, about 1.8 GB**, roughly 35 minutes
-at `--jobs 7`. Layout is `corpus-tts/<split>/<category>/<voice>/<text>.r<rate>.<n>.wav`,
+42 voices × 1140 utterances = **47880 files, about 2.0 GB**. Budget roughly
+2.5 hours at `--jobs 7`: `say` scales poorly, giving about 3x for 7 workers,
+and the build runs at about 5 files/s. The natural tier alone is 13 voices and
+about 50 minutes, and it covers every val and test voice, so it is the subset
+worth building first. Layout is `corpus-tts/<split>/<category>/<voice>/<text>.r<rate>.<n>.wav`,
 and `manifest.json` is the authority — one record per utterance carrying path,
 split, category, label, text, voice, family, tier, locale, rate, and every
 augmentation parameter.
@@ -316,6 +381,30 @@ A `variant` is MOTHER'S, WORKED, LOVES. Firing there is DOCTOR working
 correctly, so counting it as a false positive would drag the rejection
 threshold down to punish good behaviour. The engine matches exact forms, so
 LOVE firing on "loves" is arguably right.
+
+### Sweeping a threshold without negatives inflates recall
+
+A precision/recall sweep run over the keywords alone is not a weaker
+measurement, it is a wrong one. **With no negatives present nothing can fire on
+an ordinary word**, so precision stays at 1.000 however low the threshold goes,
+the sweep keeps lowering it, and it reports the recall that buys. Restore the
+negatives and the same threshold fires on one of them.
+
+Measured on the human set: evaluating `takes/` alone reported recall 0.700 at
+precision 1.000; adding the twelve negatives in `takes-oov/` put the honest
+operating point at **recall 0.500, precision 1.000**, with 0.700 costing
+precision 0.875. Same model, same audio, no code changed — only whether the
+things it must stay silent on were in the room.
+
+**The tell is that the flattering number arrives with a *lower* threshold.**
+That is worth memorising as a general rule: a rejection threshold that drifts
+down while the score goes up means the thing that was holding it up has left
+the evaluation set. It is the same shape as the `say_corpus.RETIRED` trap two
+sections up — a test set that silently stops containing the case it exists to
+test — and both are invisible in every curve they affect.
+
+So: score against `word` **and** `unknown` together, always. `variant` is
+scored as neither.
 
 `NEAR_MISS` groups 95 of the unknowns by the keyword each attacks — *other*,
 *another* and *wonder* against FATHER; *smother* and *mutter* against MOTHER;

@@ -17,22 +17,26 @@ unknown. It worked, on the one speaker it has been tried on.
 > | --- | --- | --- |
 > | CNN, synthetic held-out voices | 0.626 | 0.013 |
 > | **CNN, real speaker** | **0.700** | **0.500** |
-> | DTW control, same real speaker | 0.300 | **0.000** |
+> | DTW control, same real speaker, best of four configurations | 0.700 | **0.000** |
 >
-> **The model recognises a real human better than it recognises held-out
-> synthetic voices**, and it clears the incumbent's bar decisively: at a
-> threshold where it never once fires wrongly, it catches half the keywords,
-> where DTW with synthetic templates catches none at any threshold.
+> **Identical top-1 — and only one of them is usable.** At a threshold where the
+> CNN never once fires wrongly it catches half the keywords, while DTW with
+> synthetic templates has no such threshold at all: at every setting tried, its
+> first correct fire arrives no earlier than its first false one. The difference
+> between the two is not recognition, it is **rejection**.
+>
+> The model also recognises the real human at least as well as it recognises
+> held-out synthetic voices, which the design had predicted would not happen.
 >
 > **n=10 keywords and 12 negatives, one speaker, one session, one room.** Half
 > of ten is five utterances; the error bar is enormous. This answers "does a
 > synthetically-trained model recognise a real person at all" — which was the
 > question — and nothing finer.
 >
-> **No American voice was in training and the speaker is American.** Measured,
-> that does not appear to be the limiting factor — the one held-out American
-> voice scores *highest* of the four, see below — but the DTW row in particular
-> should be re-run once American voices are in the roster.
+> **The DTW row has since been re-run with American voices in the template
+> set.** Its top-1 more than doubled, to 0.700 — level with the CNN — and its
+> precision-1.000 recall stayed at **0.000** in every configuration tried. The
+> gap between the two approaches is not recognition, it is rejection.
 
 ## The endpointer looked broken, and was being fed a chirp
 
@@ -161,15 +165,50 @@ reading is that the real-speaker result is *not worse*, which is the surprise �
 `docs/speech-design.md` predicted a large fall and the brief for this work said
 to expect one.
 
-### Accent was not the limiting factor, measured
+### Accent was real for DTW's top-1 and irrelevant to the decision
 
-No American voice was in the training set — train was Aman (en_IN), Rishi
-(en_IN), Moira (en_IE), Tessa (en_ZA) and Eddy (en_GB) — while the human
-speaker is American. That is a real confound and it was raised as one. It is
-also directly testable without any new corpus, because the held-out voices
-happen to span both cases:
+The first roster had **no American voice in training** while the speaker is
+American, so every early number risked measuring an accent gap and calling it a
+speaker gap. The roster was rebuilt with American voices in train (Bruce,
+Samantha, Joelle, Noelle) and an American of each gender held out in test
+(Allison, Nathan, both Enhanced). Re-running the DTW control — the cheapest read,
+since it needs no training — against the same 22 real utterances:
 
-| held-out voice | accent | that accent in training? | top-1 |
+| template voices | top-1 | precision 1.000 at recall |
+| --- | --- | --- |
+| 3, no American in roster *(old)* | 0.300 | 0.000 |
+| 3, American-inclusive | 0.600 | 0.000 |
+| **5, incl. Samantha + Joelle** | **0.700** | **0.000** |
+| 8 voices x 2 takes (336 templates) | 0.500 | 0.000 |
+
+**Accent was worth a lot to DTW's raw discrimination** — top-1 more than
+doubled, 0.300 to 0.700 — and **worth nothing at all to the decision**, because
+in every configuration there is still no threshold at which DTW fires without a
+false positive. Its distances simply do not separate in-vocabulary from
+out-of-vocabulary across speakers, however good its argmax gets. Note also that
+piling on templates makes it worse, not better: 336 templates score 0.500
+against 102 templates' 0.700, because every extra template is another chance for
+an out-of-vocabulary word to land near something.
+
+That sharpens the comparison rather than softening it:
+
+| | top-1 | precision 1.000 at recall |
+| --- | --- | --- |
+| DTW, best configuration | 0.700 | **0.000** |
+| CNN | 0.700 | **0.500** |
+
+**Identical top-1, and only one of them is usable.** The difference is not
+recognition, it is *rejection* — which is precisely what `docs/speech.md` argues
+is the load-bearing property of this whole design, and precisely what a trained
+`unknown` class provides and a nearest-neighbour distance does not.
+
+#### And it was not limiting the CNN either, per held-out voice
+
+On the **first** roster, before American voices were installed, the held-out
+voices already spanned both cases, so the CNN's exposure to the confound was
+measurable without waiting for a rebuild:
+
+| held-out voice | accent | that accent in training? | CNN top-1 |
 | --- | --- | --- | --- |
 | **Samantha** | **en_US** | **no** | **0.668** |
 | Tara | en_IN | yes | 0.653 |
@@ -419,7 +458,7 @@ each precision* rather than one row per threshold: DTW's integer scores have
 plateaus and collapse to a few dozen rows, softmax probabilities are all
 distinct and print a thousand rows of noise.
 
-### The validation set is two voices, and that caps what can be concluded
+### The validation set is small, and that caps what can be concluded
 
 The frozen roster holds 43 installed English voices, but only **8 are
 independent natural speakers** — the rest are 16 iOS voices that form a single
