@@ -28,6 +28,11 @@ unknown. It worked, on the one speaker it has been tried on.
 > of ten is five utterances; the error bar is enormous. This answers "does a
 > synthetically-trained model recognise a real person at all" — which was the
 > question — and nothing finer.
+>
+> **No American voice was in training and the speaker is American.** Measured,
+> that does not appear to be the limiting factor — the one held-out American
+> voice scores *highest* of the four, see below — but the DTW row in particular
+> should be re-run once American voices are in the roster.
 
 ## The endpointer looked broken, and was being fed a chirp
 
@@ -144,6 +149,34 @@ reading is that the real-speaker result is *not worse*, which is the surprise �
 `docs/speech-design.md` predicted a large fall and the brief for this work said
 to expect one.
 
+### Accent was not the limiting factor, measured
+
+No American voice was in the training set — train was Aman (en_IN), Rishi
+(en_IN), Moira (en_IE), Tessa (en_ZA) and Eddy (en_GB) — while the human
+speaker is American. That is a real confound and it was raised as one. It is
+also directly testable without any new corpus, because the held-out voices
+happen to span both cases:
+
+| held-out voice | accent | that accent in training? | top-1 |
+| --- | --- | --- | --- |
+| **Samantha** | **en_US** | **no** | **0.668** |
+| Tara | en_IN | yes | 0.653 |
+| Daniel | en_GB | yes | 0.588 |
+| Karen | en_AU | no | 0.562 |
+
+**The single American voice scores highest of the four, and the accent that was
+in training scores lowest.** Seen accents span 0.588-0.653; unseen accents span
+0.562-0.668. Whether an accent appeared in training does not order this table,
+so accent is not what is limiting the CNN — and the real speaker's 0.700 sits
+right beside Samantha's 0.668, which is the comparison that matters: an American
+voice, an accent absent from training, scoring the same as the American human.
+
+**n=1 voice per accent.** This rules out accent as the *dominant* effect; it
+does not measure an accent penalty precisely, and it says nothing about DTW,
+whose template distance is far more sensitive to phonetic realisation than a
+convolutional net pooled over time. The DTW control's 0.300 may still be partly
+an accent gap and should be re-run when American voices are in the roster.
+
 ### What is still true
 
 - **si-corpus's SNR result stands and is independent of this bug.** The same
@@ -162,36 +195,30 @@ to expect one.
   which draws gain and tilt but never clipping. This particular microphone no
   longer produces it, but a louder speaker or a closer one will, and the corpus
   has no example of it. Still worth an augmentation axis; no longer urgent.
-- **The feature dynamic-range gap is real, and it is not the capture.** Three
-  versions of the same 22 words are kept on disk, so this is a controlled
-  comparison rather than an inference:
+- **The feature dynamic-range gap is fully explained: it was the dry-run
+  corpus, not the signal chain.** Standard deviation of the int8 patches:
 
   | set | n | std | p01 | p99 | cells at -128 |
   | --- | --- | --- | --- | --- | --- |
   | real, chirp-contaminated | 8 | 11.07 | -43 | 31 | 0.00% |
   | real, clipped (mic gain 3) | 22 | 17.91 | -51 | 50 | 0.00% |
   | **real, clean (mic gain 1)** | 22 | **16.88** | -53 | 50 | 0.00% |
-  | synthetic, dry-run (no noise) | 400 | **43.12** | -128 | 89 | 3.27% |
+  | **synthetic, real corpus (with noise)** | 800 | **17.48** | -54 | 49 | 0.00% |
+  | synthetic, dry-run (no noise) | 800 | 44.12 | -128 | 91 | 3.77% |
 
-  **Clipping was not the cause: removing it changed nothing** — 17.91 clipped
-  against 16.88 clean, with the clipped set marginally the *higher* of the two.
-  The chirp was worth about six points. What remains is a **~2.6x** gap that
-  belongs to the signal chain rather than to any capture fault, and both capture
-  faults are now fixed so it cannot be attributed to them again.
+  **16.88 against 17.48 — the generated corpus and real speech are
+  indistinguishable.** The whole ~2.6x gap was an artefact of comparing against
+  a corpus with no additive noise, exactly as predicted. Removing the clipping
+  changed nothing (17.91 against 16.88), and the chirp was worth about six
+  points; neither was the cause.
 
-  One component is an artefact of the comparison rather than of speech:
-  **3.27% of synthetic cells sit at the -128 clamp against 0.00% of real ones**,
-  because `say` renders true digital silence in the lead and tail, which after
-  per-band mean subtraction is a large negative excursion a microphone with a
-  noise floor cannot produce. Excluding those takes synthetic from 43.12 to
-  36.50 — some of the gap, not most of it.
-
-  The remaining hypothesis is that the **dry-run corpus has no additive noise at
-  all** while the generated corpus does, and noise raises the floor and
-  compresses exactly this contrast. Testable the moment the corpus exists, and
-  worth doing first: it decides whether a model would read inputs from a third
-  of the range it trained on.
-
+  The mechanism is the -128 clamp column. `say` renders true digital silence in
+  the lead and tail, which after per-band mean subtraction is a large negative
+  excursion — 3.77% of dry-run cells. Mix in a noise floor, as the real corpus
+  does, and it vanishes to 0.00%, matching what a microphone produces. **This is
+  the strongest single argument for si-corpus's noise augmentation**: without
+  it the model would have trained on a contrast distribution the device can
+  never deliver.
 ## Labels, used as [speech-design.md](speech-design.md) uses them
 
 | Label | Means |
@@ -533,28 +560,27 @@ cd TinyMaix && python -m tools.tflite2tmdl in.tflite out.tmdl int8 1 80,26,1 22
 
 ## What is still unknown
 
-- **Whether any of this works on a human.** *unknown*, and it is the experiment.
-  Ten clean post-fix takes now exist and all ten endpoint, but ten utterances of
-  one speaker with no negatives cannot measure precision, which is the metric
-  this design turns on.
+- **Whether it works on people, rather than on this person.** *Answered for one
+  speaker*, in one session, in one room, over 10 keywords and 12 negatives. A
+  second speaker is what turns this into a claim about human speech.
 - **Whether the 5.71x `IMX/IMN` requirement is the right design.** Derived here
   and still never tested against this microphone — every measurement that looked
   like a test was taken through the chirp bug. On clean captures it is not
   binding, so this is a question for a noisier room rather than a live problem.
-- **Whether the remaining 2.2x feature contrast gap is real or is the
-  clipping.** Halved by the chirp fix; the rest is unexplained.
+- **What the model does with more than 4 training voices.** Only the natural
+  tier was generated; the 16-voice expressive family is unrendered. This is the
+  largest untested lever.
 - **Whether `emlearn_cnn_int8` imports on this board.** *unknown* — si-device
   owns it and had no board time. The prebuilt `.mpy` decodes to mpy 6.3 /
   `armv7emsp` / 31-bit small ints, which matches this board on all three, so the
   ABI question is settled in our favour; whether the ARM code links and computes
   correctly is not. A clean import is not proof either — a native module can
   import and still generate wrong code, so the probe classifies emlearn's ten
-  shipped MNIST digits, and `build/kw_unknown_*.bin` are eight real patches with
-  host predictions in their filenames to prove it on *this* topology.
+  shipped MNIST digits, and real input patches with host predictions in their
+  filenames prove it on *this* topology.
 - **Inference time on the device.** *unknown*. si-device predicts 25-50 ms on
   TinyMaix and 225-450 ms on a viper fallback, against DTW's measured 616-672 ms
   of matching.
-- **Every accuracy number on the real corpus.** The corpus was still generating.
 - **Whether TinyMaix's unclamped int8 layer outputs wrap on real device
   features.** Its `tm_postprocess_sum` has a bare C cast where TFLite clamps, so
   a representative set calibrated on clean synthetic features could let real
@@ -562,32 +588,28 @@ cd TinyMaix && python -m tools.tflite2tmdl in.tflite out.tmdl int8 1 80,26,1 22
 
 ## Resuming
 
-0. **The endpointer is fixed — confirm it stays fixed, then move on.** The
-   chirp-bleed bug is repaired and post-fix captures endpoint 10 of 10 with 4x
-   to 9x margin. **Do not change `ITU`.** What is left from that investigation is
-   the clipping: every capture still saturates, and saturation is absent from the
-   training corpus, so it needs an augmentation axis rather than a knob.
-1. **Get ~3 minutes of the user's voice.** Keywords through
-   `tools/enrol.py takes/`, then negatives through
-   `tools/enrol.py takes-oov/ --allow-any`: **other, another, wonder, mother's,
-   brother's** first (the "other" -> FATHER collision at 727 sets the whole DTW
-   threshold), then **no, know, want, need**, then conversational filler. Without
-   negatives, real-speaker *precision* — the number that matters most — cannot
-   be measured at all.
-2. **Generate the corpus** — `python3 tools/train_corpus.py corpus-tts/ --jobs 7`,
-   about 2 hours and resumable, or the 8 natural voices alone in ~15 minutes.
-   Then `tools/si_features.py corpus-tts/manifest.json --cache <dir> --stats` for
-   the length distribution and per-class counts. Note `endpoint_ms: null` rows
-   are utterances the VAD could not find and are a real population, not an
-   error.
-3. `tools/si_dtw_control.py corpus-tts/manifest.json` — **the bar, first.**
-4. `tools/si_train.py corpus-tts/manifest.json --arch dscnn` and again with
-   `--arch plain`; sweep `--width` and `--unknown-weight`.
-5. `tools/si_eval.py build/si.tflite corpus-tts/manifest.json --takes takes/`.
-6. Convert, `tools/tmdl_info.py --pad`, hand to the device side.
+The experiment answered its question. What is left is hardening it.
 
-**The decision rule, agreed in advance so it cannot be argued backwards:** if
-the CNN does not beat the DTW control's precision-1.000 recall on *real* speech,
-ship DTW with synthetic templates and stop. Given how forgiving ELIZA is of a
-miss, a model that fires rarely and is never wrong is the target; one that is
-merely more accurate on average is not.
+1. **More real speech, and it is the cheapest win available.** Ten keywords and
+   twelve negatives from one speaker gave precision 1.000 at recall 0.500. Three
+   takes per word plus thirty negatives would turn that from an indication into
+   a measurement, and a second speaker would turn it into a claim about people
+   rather than about one person.
+2. **Generate the rest of the corpus.** Only the 8 natural-tier voices were
+   built (~9000 files, 8 minutes). The 16-voice expressive family and the
+   novelty tier are ~2 hours more and the model currently trains on **4 voices**.
+   More training voices is the single biggest lever left.
+3. **Get the model onto the board.** `build/si_real.tflite` converts; run
+   `tools/tmdl_info.py --pad` and hand it to the device side with a handful of
+   `uint8` patches. The import question is still open.
+4. **Then tune for precision.** Sweep `--unknown-weight`, `--width` and
+   `--arch`; the operating point matters more than the accuracy, and none of
+   these has been swept even once against the real corpus.
+5. **Add clipping to the channel model.** This microphone no longer saturates,
+   but a louder or closer speaker will, and the corpus has no example of it.
+
+**The decision rule, stated in advance and now settled:** the CNN had to beat
+the DTW control's precision-1.000 recall on real speech. It did — 0.500 against
+0.000 — so the speaker-independent path is worth pursuing and "ship DTW with
+synthetic templates" is not a live option, because DTW with synthetic templates
+does not work on a person at all.

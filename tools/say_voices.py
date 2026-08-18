@@ -143,6 +143,39 @@ DEFAULT_SPLIT = ("train", "val", "test")
 NATURAL_MAX_WORD_MS = 600
 TIERS = ("natural", "expressive", "novelty")
 
+# `say -v '?'` reports a locale and nothing else, so gender is curated here.
+# It is a **judgement from Apple's own voice documentation and the names**, not
+# a measurement, and it is recorded rather than inferred because the split has
+# to guarantee both genders in training: the user is male and wants the toy to
+# work for women too, and nothing in the voice list would let that be checked.
+#
+# Anything absent is `unknown` and is treated as satisfying no gender
+# constraint -- absent is not a third gender, it is missing information, and a
+# constraint met by a guess is worse than one reported unmet.
+VOICE_GENDER = {
+    # en_US
+    "Allison": "female", "Ava": "female", "Joelle": "female",
+    "Nicky": "female", "Noelle": "female", "Samantha": "female",
+    "Susan": "female", "Zoe": "female", "Kathy": "female",
+    "Evan": "male", "Nathan": "male", "Tom": "male", "Bruce": "male",
+    "Albert": "male", "Fred": "male", "Junior": "male", "Ralph": "male",
+    # other English locales
+    "Karen": "female", "Moira": "female", "Tessa": "female",
+    "Tara": "female", "Fiona": "female", "Serena": "female",
+    "Daniel": "male", "Rishi": "male", "Aman": "male", "Oliver": "male",
+    # the iOS expressive set is deliberately absent: Apple does not present
+    # Eddy, Flo, Reed, Rocko, Sandy or Shelley as gendered, and guessing from
+    # the name would put a made-up fact into a constraint check.
+}
+
+# Voice quality, which `say` puts in the name: `Allison (Enhanced)`. Enhanced
+# and Premium are much larger, much better models than the Compact default and
+# are markedly closer to real speech, which is the entire reason for training
+# on synthetic voices at all. Where the same voice is installed at two
+# qualities, the better one wins -- they share a name stem, so `group_families`
+# already keeps them on the same side of the split.
+QUALITY_RANK = {"Premium": 3, "Enhanced": 2, "Compact": 1}
+
 # Voices this close in long-term log-mel must not straddle a split.
 #
 # A backstop, not the primary defence: `group_families` already merges every
@@ -270,8 +303,25 @@ def probe(voices, scratch, verbose=True):
 
 
 def name_stem(name):
-    """`Flo (English (UK))` -> `Flo`. The character behind the locale variant."""
+    """`Flo (English (UK))` -> `Flo`. The character behind the locale variant.
+
+    Also collapses `Allison (Enhanced)` onto `Allison`, so a voice installed at
+    two qualities is one speaker for splitting purposes.
+    """
     return name.split(" (")[0].strip()
+
+
+def quality_of(name):
+    """`Allison (Enhanced)` -> `Enhanced`. Compact is the unmarked default."""
+    for q in QUALITY_RANK:
+        if "(%s)" % q in name:
+            return q
+    return "Compact"
+
+
+def gender_of(name):
+    """`female` / `male` / `unknown`. Curated -- see VOICE_GENDER."""
+    return VOICE_GENDER.get(name_stem(name), "unknown")
 
 
 def same_prosody(a, b):
@@ -474,15 +524,132 @@ def assign_split(families, weights=(3, 1, 1)):
     """
     for f in families:
         f["stratum"] = f["tier"]
-    _greedy([f for f in families if f["tier"] == "natural"], weights)
-    # Everything else trains and is never held out. With no human takes this
-    # session, the held-out voices are the entire evidence for generalisation,
-    # so they have to be the voices that most resemble the target -- a `test`
-    # split containing Bahh predicts how the model does on a sheep noise.
+
+    # Everything outside the natural tier trains and is never held out. The
+    # held-out voices are the evidence for generalisation to a person, so they
+    # have to be the voices that most resemble one -- a `test` split containing
+    # Bahh predicts how the model does on a sheep noise.
+    natural = [f for f in families if f["tier"] == "natural"]
     for f in families:
         if f["tier"] != "natural":
             f["split"] = "train"
+
+    # The natural tier is assigned against explicit requirements rather than by
+    # share, because the requirements are what the split is *for* and a 3:1:1
+    # greedy pass satisfies them only by luck. The user speaks American English
+    # and is male, and wants the toy to work for women too.
+    #
+    #   1. at least one en_US voice in train  -- train on the accent that will
+    #      be spoken to it. The previous roster had none: every natural
+    #      training voice was en_IN, en_IE or en_ZA and the only natural en_US
+    #      voice sat in val, so the model had never heard the target accent and
+    #      an accent gap could be reported as a speaker gap.
+    #   2. both genders in train
+    #   3. at least one en_US voice in test, so generalisation to an unseen
+    #      American speaker is measured rather than assumed
+    #   4. whatever is left spread 3:1:1
+    #
+    # Highest quality first within each step: Enhanced and Premium are much
+    # better models than Compact, so when a requirement can be met by either,
+    # the better voice is the one to spend on it.
+    def rank(f):
+        v = f["voices"][0]
+        return (-QUALITY_RANK.get(quality_of(v), 1), v)
+
+    us = sorted([f for f in natural if f["locale"] == "en_US"], key=rank)
+    rest = sorted([f for f in natural if f["locale"] != "en_US"], key=rank)
+    for f in natural:
+        f["split"] = None
+
+    # American voices are allocated by gender, test first and best first.
+    #
+    # Test gets one of each gender before train gets any, and gets the better
+    # models, because `test` is where a handful of voices carry the entire
+    # claim about an unseen American speaker while `train` has thirty others to
+    # dilute a weak one. Train then takes one of each gender from what is left,
+    # and the remainder trains.
+    for want in ("male", "female"):
+        for f in us:
+            if f["split"] is None and gender_of(f["voices"][0]) == want:
+                f["split"] = "test"
+                break
+    for want in ("male", "female"):
+        for f in us:
+            if f["split"] is None and gender_of(f["voices"][0]) == want:
+                f["split"] = "train"
+                break
+    for f in us:
+        if f["split"] is None:
+            f["split"] = "train"
+
+    def genders_in(split):
+        return set(gender_of(v) for f in families if f["split"] == split
+                   for v in f["voices"]) - {"unknown"}
+
+    def take(pool, want_gender, split):
+        """Assign the best unassigned voice of `want_gender` to `split`."""
+        for f in pool:
+            if f["split"] is None and gender_of(f["voices"][0]) == want_gender:
+                f["split"] = split
+                return True
+        return False
+
+    # Any gender still missing from train is filled from the other locales --
+    # an accented voice of the right gender beats no voice of that gender.
+    for want in ("male", "female"):
+        if want not in genders_in("train"):
+            take(rest, want, "train")
+
+    # Then balance the held-out splits by gender. The user is male and wants
+    # the toy to work for women too, so a `test` split that is entirely female
+    # cannot answer half the question -- and the first version of this policy
+    # produced exactly that, because it optimised for locale and never looked
+    # at gender once the en_US test voice was placed.
+    for split in ("test", "val"):
+        for want in ("male", "female"):
+            if want not in genders_in(split):
+                take(rest, want, split) or take(us, want, split)
+
+    _greedy([f for f in rest if f["split"] is None], weights)
+    for f in natural:
+        if f["split"] is None:
+            f["split"] = "train"
     return families
+
+
+def check_requirements(voices):
+    """Which of the split's requirements hold. Returns a list of complaints.
+
+    Reported rather than raised, because some of them cannot be met by any
+    assignment -- if the machine has exactly one en_US male voice it can be
+    trained on or held out, never both, and the right response is to say so
+    rather than to pick one silently and call the split satisfied.
+    """
+    out = []
+    by_split = {}
+    for v in voices:
+        by_split.setdefault(v["split"], []).append(v)
+
+    train = by_split.get("train", [])
+    if not any(v["locale"] == "en_US" for v in train):
+        out.append("no en_US voice in train -- the model never hears the "
+                   "accent it will be spoken to")
+    genders = set(gender_of(v["name"]) for v in train) - {"unknown"}
+    for want in ("male", "female"):
+        if want not in genders:
+            out.append("no %s voice in train" % want)
+
+    for split in ("val", "test"):
+        rows = by_split.get(split, [])
+        if rows and not any(v["locale"] == "en_US" for v in rows):
+            out.append("no en_US voice in %s -- generalisation to an unseen "
+                       "American speaker is assumed, not measured" % split)
+        seen = set(gender_of(v["name"]) for v in rows) - {"unknown"}
+        missing = sorted({"male", "female"} - seen)
+        if rows and missing:
+            out.append("no %s voice in %s"
+                       % (" or ".join(missing), split))
+    return out
 
 
 def build_roster(scratch, speech_only=True, weights=(3, 1, 1), verbose=True):
@@ -510,12 +677,19 @@ def build_roster(scratch, speech_only=True, weights=(3, 1, 1), verbose=True):
     for v in voices:
         v["family"] = family_of[v["name"]]
 
+    for v in voices:
+        v["gender"] = gender_of(v["name"])
+        v["quality"] = quality_of(v["name"])
+    for f in families:
+        f["locale"] = next(v["locale"] for v in voices
+                           if v["name"] == f["voices"][0])
     assign_tier(voices, families)
     assign_split(families, weights)
     for v in voices:
         v["split"] = next(f["split"] for f in families
                           if v["name"] in f["voices"])
     twins = find_twins(voices, family_of)
+    unmet = check_requirements(voices)
     straddle = check_straddle(voices, twins)
     if straddle:
         raise ValueError("the split leaks: %s" % "; ".join(straddle))
@@ -533,6 +707,7 @@ def build_roster(scratch, speech_only=True, weights=(3, 1, 1), verbose=True):
         "voices": voices,
         "families": families,
         "close_pairs": twins,
+        "unmet_requirements": unmet,
     }
 
 
@@ -555,9 +730,11 @@ def print_report(roster, full=False):
         print("%-6s %-11s %-3d %-27s  %s"
               % (f["split"], f["tier"], len(f["voices"]), f["key"],
                  " ".join("%6d" % d for d in f["durations_ms"])))
-        if len(f["voices"]) > 1:
-            for name in f["voices"]:
-                print("           %-27s  %s" % (name, by_name[name]["locale"]))
+        for name in f["voices"]:
+            v = by_name[name]
+            print("           %-27s  %-6s %-7s %s"
+                  % (name, v["locale"], v.get("gender", "?"),
+                     v.get("quality", "?")))
 
     counts = {}
     for v in voices:
@@ -574,6 +751,12 @@ def print_report(roster, full=False):
     print("tiers: %s" % ", ".join("%s %d" % (t, tiers.get(t, 0)) for t in TIERS))
     print("%d voices, %d distinct probe digests -- no `say` fallbacks"
           % (len(voices), roster.get("distinct_digests", 0)))
+
+    unmet = roster.get("unmet_requirements") or []
+    if unmet:
+        print("\nUNMET, and stated rather than worked around:")
+        for u in unmet:
+            print("  - %s" % u)
 
     close = roster["close_pairs"]
     if close:
