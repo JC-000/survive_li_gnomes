@@ -219,18 +219,40 @@ LINES = (
     ("noun-mother", "Why do you say your mother"),
 )
 
-# The seam test. Rendering "why do you say your" once and gluing a separately
-# rendered "mother" onto it is what makes a 12-noun slot cost 1 clip instead of
-# 12 -- but a sentence spoken whole carries an intonation contour across that
-# join, and two clips spliced together do not. There is no measurement that
-# settles whether it matters; that is what ears are for, so both go in the
-# shortlist side by side.
+# The seam test, and the most consequential comparison in the file: it decides
+# whether the reply corpus is 132 clips or 379, which is the difference between
+# fitting the filesystem and not.
+#
+# Rendering "why do you say your" once and gluing a separately rendered "mother"
+# onto it is what makes a 12-noun slot cost one clip instead of twelve. But a
+# sentence spoken whole carries one intonation contour across the join, and two
+# clips butted together carry two. Normally you would flatten the pieces to
+# match with [[pmod 0]] -- which is exactly the control that turns out to be
+# ignored, so there is no way to smooth a seam after the fact. What is rendered
+# is what ships.
+#
+# Each entry is (id, head, filler, tail). A **trailing** slot -- tail empty --
+# has one join, and it is the easy case: the pitch is falling into a sentence
+# end anyway, so a fresh render starting there is not far wrong. A **medial**
+# slot has two joins and the tail fragment has to begin mid-clause, where `say`
+# will give it a sentence-initial contour it has no business having.
+#
+# The first two below are medial and are the honest test. The trailing pair are
+# kept for contrast, so the difference between the easy and hard case is
+# audible rather than asserted.
 SEAMS = (
-    ("noun-mother", "Why do you say your", "mother"),
-    ("literal-mother", "What else comes to mind when you think of your", "mother"),
+    ("medial-thinking", "Does thinking of", "mother", "bring anything else to mind"),
+    ("medial-remember", "Why do you remember", "mother", "just now"),
+    ("trailing-say", "Why do you say your", "mother", ""),
+    ("trailing-comes", "What else comes to mind when you think of your", "mother", ""),
 )
 
 XFADE_MS = 10   # over the splice; a hard cut clicks, same reason make_clip fades
+
+# How much audio either side of a join to take a pitch reading from. Long enough
+# to hold a few pitch periods at 130 Hz, short enough not to average the jump
+# away.
+SEAM_PROBE_MS = 140
 
 
 def read_wav(path):

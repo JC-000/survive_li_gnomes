@@ -197,6 +197,36 @@ doing this at all. It means the *accuracy* half of the comparison has to be
 re-measured under TinyMaix before it is quoted against DTW, and the *cost* half
 already has been.
 
+### The drift is noise, not a shift, and that is the worse case
+
+Worth being precise about, because the two have different remedies. On the MNIST
+control the deltas run **both ways** — `+0.0157` on digit 2, `-0.0466` on digit
+4. So this is not a monotone bias that a retuned threshold would absorb; it is
+scatter added to the scores.
+
+A monotone shift moves the operating point along the precision/recall frontier
+and re-tuning recovers it. **Scatter degrades the frontier itself**, because it
+blurs the separation between the classes the threshold is meant to divide. So
+re-tuning on the device is necessary but may not be sufficient: the achievable
+precision/recall curve under TinyMaix can be genuinely worse than the one
+measured under TFLite, not merely differently placed on it.
+
+### What the eight patches do and do not establish
+
+They establish the *direction* of the disagreement — three of eight changed
+top-1, two of them from a keyword to `unknown`. They do **not** establish whether
+that is more accurate or less, and it would be easy to read them as if they did.
+
+The patches carry no ground truth. Their filenames encode what an **earlier**
+model (`si_dscnn_w1`) predicted, not what was said — which is why the host
+references here were recomputed rather than taken from the labels. If the true
+label on those two was in fact `unknown`, the device was the more accurate of
+the two. Nothing available says which.
+
+So: "the device leans toward `unknown`" is measured. "The device has lower
+recall" is an inference from that lean at a **fixed** threshold, and it is the
+part that needs the host build to settle.
+
 ## Memory cost
 
     resident = 2 x max(file_size, buf_size)      model copy + activation scratch

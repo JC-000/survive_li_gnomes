@@ -37,13 +37,14 @@ unknown. It worked, on the one speaker it has been tried on.
 > synthetically-trained model recognise a real person at all" — which was the
 > question — and nothing finer.
 >
-> **The operating point does not transfer to the device as measured.** These
-> gates were tuned against the `.tflite`; the board runs a `.tmdl` through
-> TinyMaix, whose arithmetic is an independent reimplementation and gives
-> different probabilities. Top-1 differed on **3 of 8** patches. The top-1 row
-> above is unaffected in kind, but the threshold behind the 0.500 has to be
-> re-tuned against TinyMaix arithmetic before it means anything on hardware —
-> see [Tuning against the wrong model](#tuning-against-the-wrong-model).
+> **The CNN rows were measured on the `.tflite`, not on what the board runs.**
+> The device executes a `.tmdl` through TinyMaix, an independent
+> reimplementation whose arithmetic differs: top-1 disagreed on **3 of 8**
+> patches. DTW is untouched by this, so the CNN-against-DTW rows are not
+> like-for-like and the CNN's 0.500 is provisional against them. What survives
+> is that DTW has **no** usable threshold in any configuration, which nothing on
+> the CNN's side can change. See
+> [Tuning against the wrong model](#tuning-against-the-wrong-model).
 >
 
 ## Start here — what to run, in order
@@ -108,9 +109,17 @@ No change to the model is worth as much.
 
 DTW and the CNN reach **identical top-1 on the real speaker — 0.700 each** — and
 only one of them can be deployed, because only one can decline to answer. At
-every threshold tried, DTW's first correct fire arrives no earlier than its
-first false one; the CNN has a setting where it catches half the keywords and
-fires wrongly on nothing at all, keywords and negatives alike.
+every threshold tried, in four template configurations, **DTW's first correct
+fire arrives no earlier than its first false one**; the CNN has a setting where
+it catches half the keywords and fires wrongly on nothing at all, keywords and
+negatives alike.
+
+The firm half of that is DTW's. Its figures are measured on the arithmetic it
+actually runs, and nothing about the CNN can hand DTW an operating point it does
+not have. **The CNN's half was measured on the `.tflite`, not on the `.tmdl` the
+board executes** — so *how much* better it is remains open, and the achievable
+curve under TinyMaix may differ in shape and not only in placement. See
+[Tuning against the wrong model](#tuning-against-the-wrong-model).
 
 That is the whole result, and it is not the one the experiment set out to find.
 The question was whether synthetic voices transfer to a human. They do, for both
@@ -124,6 +133,10 @@ precision and recall separately because a single accuracy figure averages
 together the one error that matters and the one that does not. This is that
 argument turning into a number. Two systems, the same accuracy, opposite
 verdicts.
+
+Note what that costs the usual way of reporting this: on a single accuracy
+figure these two systems are **indistinguishable**, and the whole difference
+lives in the axis that figure averages away.
 
 ## Tuning against the wrong model
 
@@ -145,13 +158,57 @@ is not the one that ships.** That is the same shape as the cross-microphone
 problem `docs/speech.md` is built around: evaluating one thing and deploying
 another, with nothing in between to say they disagree.
 
-What it does and does not invalidate:
+What it does and does not invalidate. The rule is **whether both sides of the
+comparison move together**, and an earlier draft of this file got the most
+important case wrong:
 
-- **Top-1 comparisons stand.** DTW against CNN, real speaker against synthetic
-  voices, the per-voice accent table — all are relative measures on the same
-  arithmetic, and the divergence is not large enough to reorder them.
-- **The operating point does not.** Precision 1.000 at recall 0.500, threshold
-  0.598, is a property of the `.tflite`. It has to be re-derived.
+- **CNN-internal comparisons stand.** Real speaker against synthetic voices, the
+  per-voice accent table, architecture against architecture. Both sides are the
+  same model under the same arithmetic, so a shift moves them together and the
+  ranking holds.
+- **CNN against DTW does *not* stand, because only one side moves.** DTW is
+  untouched by TinyMaix — it is integer L1 over the same features either way —
+  while the CNN's probabilities shift. So a CNN figure measured on the `.tflite`
+  and set beside DTW's measured figure is not a like-for-like comparison, and
+  the CNN's 0.500 should be treated as provisional against it.
+- **The operating point does not stand.** Precision 1.000 at recall 0.500,
+  threshold 0.598, is a property of the `.tflite` and has to be re-derived.
+
+**Do not read the direction as a recall cost.** Two of the three disagreements
+went from a keyword to `unknown`, and at a *fixed* threshold that would cost
+recall — but **the eight patches carry no ground truth.** Their filenames encode
+what an earlier model predicted, not what was said. Where the host said a
+keyword and the device said `unknown`, if the true label was `unknown` then the
+**device was the more accurate of the two**, and nothing available says which.
+What is measured is the direction of *disagreement*, not a direction of error.
+
+### It is scatter, not a shift, and that is the real argument for the host build
+
+On the MNIST control the deltas run **both ways** — `+0.0157` on digit 2,
+`-0.0466` on digit 4. The two failure shapes have different remedies:
+
+- A **monotone shift** moves the operating point along the precision/recall
+  frontier. Re-tuning the threshold recovers it and the frontier is unchanged.
+- **Scatter blurs the frontier itself**, because it degrades the separation
+  between the classes the threshold exists to divide.
+
+We have the second. So re-tuning under TinyMaix is **necessary but possibly not
+sufficient**: the achievable curve may be genuinely worse than the one measured
+under TFLite, not merely differently placed on it. That is a better reason for
+the host build than "the threshold moved".
+
+**What survives regardless.** DTW's half of the comparison is measured and firm:
+it has **no threshold at all** at which it fires without a false positive, in
+four configurations, and no arithmetic drift on the CNN's side can give DTW an
+operating point it does not have. So "one of these can decline to answer and the
+other cannot" holds — with one clause that costs nothing and is exactly true:
+**the CNN clears precision 1.000 at non-zero recall under the arithmetic it was
+measured on, and is expected but not yet confirmed to clear it under the
+arithmetic it runs on.** The **size** of its advantage is not established and
+should not be quoted until it is re-measured under TinyMaix.
+
+**And the cost half is not in question.** 66.6 ms against DTW's 616-672 ms is
+not a margin arithmetic drift can close.
 
 The bias is at least in the safe direction — on all three disagreements the
 device moved **toward `unknown`**, which for this toy means more deflections and
@@ -641,6 +698,26 @@ than assumed, and it is the bar the CNN has to clear. The third row is a
 deliberately impoverished harness test and **is not a result**; the corpus it
 used has 7 voices and no channel augmentation, against the real corpus's 23 and
 a full noise model.
+
+## A method that paid for itself in ninety seconds
+
+**When a model disagrees, re-run a model whose answers are known
+independently.** The `.tmdl`-against-`.tflite` divergence looked exactly like a
+broken ARM port, and would have been filed as one. Re-running emlearn's MNIST
+model — whose correct answers come from upstream, not from us — showed the same
+drift there, which is what turned an anecdote about our model into a mechanism
+about the runtime. si-device ran it expecting to find their own bug, and it
+happened to be the one check that could tell a port fault from a runtime
+difference.
+
+This is the third member of a family this project keeps producing, and
+`docs/speech.md` already holds one of the others: the stress fixture built to
+probe FFT overflow turned out **milder** than ordinary speech, because
+pre-emphasis saturation clamped the pathological input before the transform saw
+it. Add the chirp bleed, where a background estimate measured a tone rather than
+a room. All three are *the measurement was fine, the thing measured was not the
+thing meant* — and the general form is that **a comparison is only as symmetric
+as the thing you changed.**
 
 ## Four traps, all of which fail silently
 
