@@ -3,6 +3,14 @@
 
     python3 tools/test_conv_int8.py
 
+**Status: host-only, and that is a real limit rather than a formality.** This
+proves the *algebra*. It cannot prove the *port*, because viper's `int` is a
+32-bit machine word that wraps silently while CPython's is unbounded -- so the
+one failure the bound exists to prevent is the one failure this file is
+structurally unable to observe. Section 4 of `tools/cnn_probe.py` drives the
+same worst case on the device for exactly that reason, and **it has not been
+run**. Nothing here has touched hardware.
+
 This is the host reference for the fallback that `tools/cnn_probe.py` section 4
 measures and that `src/` would carry if `emlearn_cnn_int8` turns out not to load
 on this board. It exists for the same reason `tools/test_vad.py` exists: the

@@ -9,6 +9,19 @@ Runs on the device. Touches no peripheral -- no panel, no codec, no I2C -- so it
 is safe to run against a board that is mid-way through anything else, and it
 leaves nothing behind but the files copied above.
 
+## Status: this file has never been run on hardware
+
+It was written and dry-run against CPython with viper stubbed, which proves it
+*executes* -- every branch, every format string -- and proves nothing else. The
+expected values quoted in the comments below (~12 KB import cost, 2x the file
+resident, cycles per MAC) are **predictions from reading source and from this
+project's earlier viper measurements**, not observations. The whole point of the
+script is that they cannot be settled any other way.
+
+When it does run, the numbers it prints replace those predictions, and
+`docs/cnn-on-device.md` should be updated from its output rather than from this
+docstring.
+
 ## What it is for
 
 The keyword spotter ships DTW over MFCCs, which needs templates enrolled through

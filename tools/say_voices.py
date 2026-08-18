@@ -143,11 +143,27 @@ DEFAULT_SPLIT = ("train", "val", "test")
 NATURAL_MAX_WORD_MS = 600
 TIERS = ("natural", "expressive", "novelty")
 
-# Voices this close in long-term log-mel must not straddle a split. Set at the
-# level of the same-name-different-accent pairs (Sandy UK/US at 61.5, Rocko at
-# 63.9, Eddy at 63.1), because those are the ones that made the first roster's
-# split dishonest and they are the ones the check exists to stop coming back.
-STRADDLE_DIST = 90.0
+# Voices this close in long-term log-mel must not straddle a split.
+#
+# A backstop, not the primary defence: `group_families` already merges every
+# same-name and twin pair, so the pairs this is aimed at cannot straddle by
+# construction. It exists to catch a *future* change to the grouping, which is
+# why it raises.
+#
+# The threshold sits between the two populations rather than on either. The
+# dishonest pairs -- same voice, two accents -- run 61.5 (Sandy UK/US) to 73.3
+# (Grandma UK/US). The closest genuinely-different pair that survives grouping
+# is Aman and Tara at **84.7**: two en_IN Siri voices, different names,
+# different prosody families, and different vocal tracts. They are allowed to
+# straddle, and it is better that they do -- Aman trains and Tara tests, so the
+# en_IN accent is represented on both sides. A test accent absent from training
+# would measure accent transfer, which is a different and harder question than
+# the speaker transfer being measured here.
+#
+# 75 therefore has 73.3 below it and 84.7 above it. The margin is thin on the
+# upper side and worth knowing: a future voice landing between 75 and 84 would
+# trip this and need a judgement rather than a threshold change.
+STRADDLE_DIST = 75.0
 
 
 def enumerate_voices():
@@ -361,6 +377,80 @@ def _greedy(families, weights):
         got[pick] += len(f["voices"])
 
 
+def assert_distinct(voices):
+    """No two voice names may render byte-identically. Raises if they do.
+
+    **`say -v <name>` does not fail on a voice that is not installed -- it
+    renders in the system default voice and returns 0.** So a roster built
+    from a written-down list of names silently becomes one voice under many
+    names, those names land on both sides of the split, and the
+    speaker-independent score becomes a voice matched against itself. It reads
+    as a *good* result, which is why it has to raise rather than warn.
+
+    This roster is built by probing `say -v '?'`, which lists only what is
+    installed, so it should never trigger -- and it is checked anyway, because
+    "should never" is what CLAUDE.md keeps a list of. *Measured* 2026-08-18
+    over all 43 English voices: 43 distinct digests, no collisions.
+
+    Called from `build_roster` and again from `tools/train_corpus.py` at the
+    top of a build, so it cannot be the step somebody forgets.
+    """
+    seen = {}
+    for v in voices:
+        seen.setdefault(v["pcm_sha256"], []).append(v["name"])
+    phantom = dict((k, n) for k, n in seen.items() if len(n) > 1)
+    if phantom:
+        raise ValueError(
+            "these voice names render identically, so all but the first are "
+            "`say` falling back to the default voice: %s"
+            % "; ".join(", ".join(n) for n in phantom.values()))
+    return len(seen)
+
+
+def assign_tier(voices, families):
+    """Label every voice `natural` / `expressive` / `novelty`. See TIERS."""
+    size = {}
+    locales = {}
+    for f in families:
+        size[f["key"]] = len(f["voices"])
+        locales[f["key"]] = set()
+    by_name = dict((v["name"], v) for v in voices)
+    for f in families:
+        for name in f["voices"]:
+            locales[f["key"]].add(by_name[name]["locale"])
+    for v in voices:
+        fam = v["family"]
+        if size[fam] == 1 and v["median_word_ms"] <= NATURAL_MAX_WORD_MS:
+            v["tier"] = "natural"
+        elif len(locales[fam]) > 1:
+            v["tier"] = "expressive"
+        else:
+            v["tier"] = "novelty"
+    for f in families:
+        f["tier"] = by_name[f["voices"][0]]["tier"]
+    return families
+
+
+def check_straddle(voices, close_pairs):
+    """Close voice pairs that ended up on opposite sides. Returns complaints.
+
+    The first roster split by prosody alone, which put the eight en_GB
+    expressive voices in `train` and six of the eight en_US ones in `val` --
+    so `val` measured generalisation to Flo having trained on Flo. Seventeen
+    of thirty-four close pairs straddled the boundary and nothing said so.
+    """
+    split_of = dict((v["name"], v["split"]) for v in voices)
+    out = []
+    for p in close_pairs:
+        if p["distance"] >= STRADDLE_DIST:
+            continue
+        a, b = split_of.get(p["a"]), split_of.get(p["b"])
+        if a and b and a != b:
+            out.append("%s (%s) and %s (%s) are %.1f apart but split %s/%s"
+                       % (p["a"], a, p["b"], b, p["distance"], a, b))
+    return out
+
+
 def assign_split(families, weights=(3, 1, 1)):
     """Whole families to train / val / test, in two strata.
 
@@ -382,12 +472,16 @@ def assign_split(families, weights=(3, 1, 1)):
     because with one family holding 43% of the voices a shuffle has a real
     chance of putting it in `test`.
     """
-    singles = [f for f in families if len(f["voices"]) == 1]
-    shared = [f for f in families if len(f["voices"]) > 1]
-    _greedy(shared, weights)
-    _greedy(singles, weights)
     for f in families:
-        f["stratum"] = "single" if len(f["voices"]) == 1 else "shared"
+        f["stratum"] = f["tier"]
+    _greedy([f for f in families if f["tier"] == "natural"], weights)
+    # Everything else trains and is never held out. With no human takes this
+    # session, the held-out voices are the entire evidence for generalisation,
+    # so they have to be the voices that most resemble the target -- a `test`
+    # split containing Bahh predicts how the model does on a sheep noise.
+    for f in families:
+        if f["tier"] != "natural":
+            f["split"] = "train"
     return families
 
 
@@ -407,17 +501,24 @@ def build_roster(scratch, speech_only=True, weights=(3, 1, 1), verbose=True):
         dropped = [v["name"] for v in voices if not v["speech_like"]]
         voices = [v for v in voices if v["speech_like"]]
 
-    families = assign_split(group_families(voices), weights)
+    distinct = assert_distinct(voices)
+    families = group_families(voices)
     family_of = {}
-    split_of = {}
     for f in families:
         for name in f["voices"]:
             family_of[name] = f["key"]
-            split_of[name] = f["split"]
     for v in voices:
-        v["split"] = split_of[v["name"]]
         v["family"] = family_of[v["name"]]
+
+    assign_tier(voices, families)
+    assign_split(families, weights)
+    for v in voices:
+        v["split"] = next(f["split"] for f in families
+                          if v["name"] in f["voices"])
     twins = find_twins(voices, family_of)
+    straddle = check_straddle(voices, twins)
+    if straddle:
+        raise ValueError("the split leaks: %s" % "; ".join(straddle))
 
     return {
         "generated_by": "tools/say_voices.py",
@@ -425,6 +526,8 @@ def build_roster(scratch, speech_only=True, weights=(3, 1, 1), verbose=True):
         "probe_words": list(PROBE_WORDS),
         "probe_rate": PROBE_RATE,
         "speech_only": speech_only,
+        "distinct_digests": distinct,
+        "tiers": list(TIERS),
         "dropped_not_speech": dropped,
         "duplicate_names": sorted(set(collisions)),
         "voices": voices,
@@ -449,8 +552,8 @@ def print_report(roster, full=False):
           % ("split", "n", "family", " ".join("%6s" % w for w in PROBE_WORDS)))
     for f in sorted(fam, key=lambda f: (DEFAULT_SPLIT.index(f["split"]),
                                         -len(f["voices"]), f["key"])):
-        print("%-6s %-3d %-27s  %s"
-              % (f["split"], len(f["voices"]), f["key"],
+        print("%-6s %-11s %-3d %-27s  %s"
+              % (f["split"], f["tier"], len(f["voices"]), f["key"],
                  " ".join("%6d" % d for d in f["durations_ms"])))
         if len(f["voices"]) > 1:
             for name in f["voices"]:
@@ -465,6 +568,12 @@ def print_report(roster, full=False):
     print("\n%-6s %8s %10s" % ("split", "voices", "families"))
     for s in DEFAULT_SPLIT:
         print("%-6s %8d %10d" % (s, counts.get(s, 0), famcount.get(s, 0)))
+    tiers = {}
+    for v in voices:
+        tiers[v["tier"]] = tiers.get(v["tier"], 0) + 1
+    print("tiers: %s" % ", ".join("%s %d" % (t, tiers.get(t, 0)) for t in TIERS))
+    print("%d voices, %d distinct probe digests -- no `say` fallbacks"
+          % (len(voices), roster.get("distinct_digests", 0)))
 
     close = roster["close_pairs"]
     if close:

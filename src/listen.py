@@ -82,6 +82,16 @@ CHIRP_MS = 300
 CHIRP_HZ = 500
 CHIRP_PEAK = 24000    # of 32767. 9000 was measured audible-but-easy-to-miss on
                       # the bench; the sampled clips run at 30000 for comparison.
+# How long to hold *after* the tone before opening the microphone.
+# `play_finished()` reports that the DMA has drained into the PIO FIFO, not that
+# the speaker has stopped moving -- so returning on it alone let up to ~300 ms of
+# tone and decay land at the head of every capture. That poisons the endpointer
+# specifically: it calibrates its noise floor from the first frames, so a loud
+# head raises the floor until the real word cannot clear the start threshold.
+# Measured on this board: the tone rings ~180 ms and decays to the noise floor
+# over a further ~140 ms. 14 of 22 real recordings were rejected before this.
+CHIRP_SETTLE_MS = 140
+
 CHIRP_VOLUME = 90     # ES8311 volume is dB-ish; matches shake.py's DAC_VOLUME.
                       # Restored to DAC_VOLUME, and re-muted, after the tone.
 
@@ -281,9 +291,15 @@ class Recorder:
             self._codec.mute(False)
             self._codec.volume_set(CHIRP_VOLUME)
             self._pa.value(1)
+            started = time.ticks_ms()
             self._audio.dma_play_words_async(self._chirp)
             while not self._audio.play_finished():
                 time.sleep_ms(2)
+            # Wait out the whole tone and its decay, timed from the start of
+            # playback rather than from the DMA finishing -- the DMA drains
+            # early and is not a proxy for silence.
+            while time.ticks_diff(time.ticks_ms(), started) < CHIRP_MS + CHIRP_SETTLE_MS:
+                time.sleep_ms(5)
             return True
         except Exception as exc:  # noqa: BLE001
             print("chirp failed (%s: %s)" % (type(exc).__name__, exc))

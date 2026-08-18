@@ -216,7 +216,16 @@ def _dsconv(layers, x, filters, stride=1):
 
 
 def cost(model):
-    """(multiply-accumulates, weight bytes int8, peak activation bytes).
+    """(MACs, weight bytes int8, peak activation bytes, output elements).
+
+    The fourth number is there because si-device asked for it and was right to.
+    Both back ends pay a **fixed requantisation per output element** -- a float
+    multiply in TinyMaix, an integer multiply-and-shift in viper -- and that
+    cost tracks output elements, not MACs. It is what makes a
+    depthwise-separable network cheaper in multiplies and no faster in
+    milliseconds: the depthwise stage produces a full-size tensor for very few
+    MACs, so it buys its multiply saving by adding requantisations. A model
+    compared on MACs alone will be picked wrongly.
 
     Counted here rather than taken from a converter report, because the number
     that decides whether this is worth doing has to be checkable by reading
@@ -226,6 +235,7 @@ def cost(model):
     macs = 0
     weights = 0
     peak_act = 0
+    out_elems = 0
     for layer in model.layers:
         shape = layer.output.shape
         size = 1
@@ -233,6 +243,8 @@ def cost(model):
             size *= int(dim)
         peak_act = max(peak_act, size)
         name = type(layer).__name__
+        if name in ("Conv2D", "DepthwiseConv2D", "Dense"):
+            out_elems += size
         if name == "Conv2D":
             oh, ow, oc = [int(d) for d in shape[1:]]
             kh, kw = layer.kernel_size
@@ -249,7 +261,7 @@ def cost(model):
             n_out = int(shape[-1])
             macs += n_in * n_out
             weights += n_in * n_out + n_out * 4
-    return macs, weights, peak_act
+    return macs, weights, peak_act, out_elems
 
 
 # --- augmentation ----------------------------------------------------------
@@ -358,12 +370,13 @@ def train(x_tr, y_tr, x_va, y_va, arch="dscnn", width=1.0, epochs=60,
     tf.keras.utils.set_random_seed(seed)
     rng = np.random.default_rng(seed)
     model = build(arch, width, pool=pool)
-    macs, wbytes, act = cost(model)
+    macs, wbytes, act, oelem = cost(model)
     if not quiet:
         print("architecture %s width %.2f: %d params, %.2f MMAC, "
-              "%.1f KB weights (int8, est), %.1f KB peak activation"
+              "%.1f KB weights (int8, est), %.1f KB peak activation, "
+              "%d output elements"
               % (arch, width, model.count_params(), macs / 1e6,
-                 wbytes / 1024.0, act / 1024.0))
+                 wbytes / 1024.0, act / 1024.0, oelem))
 
     steps = max(1, len(x_tr) // batch)
     model.compile(
@@ -580,11 +593,11 @@ def main(argv):
 
     if args.cost_only:
         model = build(args.arch, args.width, pool=args.pool)
-        macs, wbytes, act = cost(model)
+        macs, wbytes, act, oelem = cost(model)
         print("%s width %.2f: %d params, %.3f MMAC, %.1f KB weights, "
-              "%.1f KB peak activation"
+              "%.1f KB peak activation, %d output elements"
               % (args.arch, args.width, model.count_params(), macs / 1e6,
-                 wbytes / 1024.0, act / 1024.0))
+                 wbytes / 1024.0, act / 1024.0, oelem))
         return 0
 
     x_tr, y_tr, x_va, y_va, v_va, rows = load_split(
@@ -601,7 +614,7 @@ def main(argv):
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     model.save(args.out + ".keras")
     blob = to_int8_tflite(model, x_tr, args.out + ".tflite")
-    macs, wbytes, act = cost(model)
+    macs, wbytes, act, oelem = cost(model)
     meta = {"arch": args.arch, "width": args.width, "pool": args.pool,
             "unknown_weight": args.unknown_weight,
             "classes": list(si_features.CLASSES),
@@ -611,6 +624,7 @@ def main(argv):
             "feature_key": si_features.feature_key(),
             "params": int(model.count_params()), "macs": int(macs),
             "weight_bytes_est": int(wbytes), "peak_activation": int(act),
+            "output_elements": int(oelem),
             "tflite_bytes": len(blob),
             # The device side needs these to read the output. Probability is
             # `(q - output_zero_point) * output_scale`; at scale 1/256 and

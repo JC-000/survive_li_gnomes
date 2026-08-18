@@ -205,6 +205,18 @@ def check_split(root):
             problems.append("family %r spans %s -- one synthesiser on both "
                             "sides of the split" % (family, " and ".join(sorted(seen))))
 
+    # Held-out voices are the only evidence for generalisation while `takes/`
+    # is empty, so a test split of formant synthesisers would predict nothing
+    # about a person. `tools/say_voices.py` holds out `natural` voices only.
+    for split in ("val", "test"):
+        tiers = set(r["tier"] for r in records
+                    if r["split"] == split and r.get("tier"))
+        wrong = sorted(tiers - {"natural"})
+        if wrong:
+            problems.append("split %s holds out %s voices; only `natural` "
+                            "voices predict a human speaker"
+                            % (split, ", ".join(wrong)))
+
     for rec in records:
         if rec["split"] == HUMAN_SPLIT:
             problems.append("%s is labelled human inside the synthetic corpus"
@@ -262,7 +274,18 @@ def main(argv=None):
                     help="verify the split and exit non-zero if it leaks")
     args = ap.parse_args(argv)
 
-    human, note = describe(args.root, args.takes)
+    try:
+        human, note = describe(args.root, args.takes)
+    except IOError as exc:
+        # An unbuilt corpus is an ordinary state -- the build takes two hours
+        # and is meant to be run separately -- so it gets a sentence and a
+        # non-zero exit, not a traceback.
+        print(exc, file=sys.stderr)
+        human, note = load_takes(args.takes)
+        print("%s (%s): %d utterances%s"
+              % (args.takes, HUMAN_SPLIT, len(human),
+                 "" if not note else " -- %s" % note), file=sys.stderr)
+        return 1
     if not args.check:
         return 0
 
