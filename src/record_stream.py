@@ -126,6 +126,14 @@ def stream(seconds=3.0, rate=16000, restore=True):
     i2c = None
     try:
         i2c = board.bus()
+
+        # The same "listening" tone the ELIZA program uses. Enrolment is a human
+        # sitting there saying words on cue, and without an audible start they
+        # are guessing when the window opened -- which is precisely how the
+        # first speech measurements on this board came back as silence. It
+        # blocks until the speaker is quiet, so it never lands in the recording.
+        recorder.chirp(i2c)
+
         if not recorder.start(i2c):
             _fail("capture did not start; see listen.Recorder")
             return False

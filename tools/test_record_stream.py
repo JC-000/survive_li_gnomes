@@ -118,8 +118,21 @@ def load_record_stream(fail_at=None):
             self.max_samples = max_samples
             self.buf = array("h", known_waveform(max_samples))
             self.available = None
+            self.chirped_before_start = None
+            listen.last_recorder = self
+
+        def chirp(self, i2c):
+            # Records ordering rather than sound. The property that matters is
+            # that the tone finishes before capture opens -- the mic and speaker
+            # share a codec, so a chirp overlapping the capture would be enrolled
+            # into every template as if it were the start of the word.
+            if self.chirped_before_start is None:
+                self.chirped_before_start = True
+            return True
 
         def start(self, i2c):
+            if self.chirped_before_start is None:
+                self.chirped_before_start = False
             return fail_at != "start"
 
         def full(self):
@@ -268,6 +281,11 @@ def test_framing():
           "count=%d payload=%d bytes" % (got_count, len(data) - len(module.MAGIC) - 8 - len(module.TRAILER)))
     check("ends with the trailer", data.endswith(module.TRAILER),
           "got %r" % data[-8:])
+
+    rec = getattr(sys.modules["listen"], "last_recorder", None)
+    check("chirped before capture opened",
+          rec is not None and rec.chirped_before_start is True,
+          "the tone must finish before the mic opens, or it lands in every template")
 
     payload = data[len(module.MAGIC) + 8:-len(module.TRAILER)]
     samples = array("h")

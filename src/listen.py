@@ -67,6 +67,24 @@ MIC_GAIN = 3
 # has a DAC and a power amp attached, so the amp is explicitly dropped.
 DAC_VOLUME = 0
 
+# Activation chirp. The board has no vibration motor and no indicator LED, and
+# e-paper cannot acknowledge anything in under ~583 ms, so a short tone through
+# the speaker is the only instant "I am listening" this hardware can give. It
+# plays *before* capture starts and is waited out, because the microphone and
+# the speaker share this codec and would otherwise record it.
+#
+# 300 ms at 500 Hz, both chosen at the bench against this speaker. The first
+# attempt was 90 ms at 1200 Hz and was inaudible to the person holding the
+# board -- not muted, not quiet, simply too brief to register as a sound. The
+# duration is dead time on every press, so do not lengthen it casually; 300 ms
+# sits against a panel that already takes ~600 ms to redraw.
+CHIRP_MS = 300
+CHIRP_HZ = 500
+CHIRP_PEAK = 24000    # of 32767. 9000 was measured audible-but-easy-to-miss on
+                      # the bench; the sampled clips run at 30000 for comparison.
+CHIRP_VOLUME = 90     # ES8311 volume is dB-ish; matches shake.py's DAC_VOLUME.
+                      # Restored to DAC_VOLUME, and re-muted, after the tone.
+
 
 def allocate_samples(count):
     """Reserve a capture buffer of `count` int16 samples.
@@ -75,6 +93,29 @@ def allocate_samples(count):
     name, and early. See the module docstring.
     """
     return array("h", bytearray(2 * count))
+
+
+def _build_chirp(rate):
+    """The activation tone, as the packed 32-bit stereo words the PIO wants.
+
+    A square wave because it is integer-only and carries further through a small
+    speaker than a sine of the same peak. The ends are faded over an eighth of
+    the tone: a square starting at full amplitude clicks, and a click is exactly
+    what this is meant not to sound like.
+    """
+    frames = rate * CHIRP_MS // 1000
+    half = max(1, rate // (2 * CHIRP_HZ))
+    fade = max(1, frames // 8)
+    buf = array("I", bytearray(4 * frames))
+    for i in range(frames):
+        v = CHIRP_PEAK if (i // half) & 1 else -CHIRP_PEAK
+        if i < fade:
+            v = v * i // fade
+        elif i >= frames - fade:
+            v = v * (frames - 1 - i) // fade
+        v &= 0xFFFF
+        buf[i] = (v << 16) | v
+    return buf
 
 
 class Recorder:
@@ -109,6 +150,7 @@ class Recorder:
         self._codec = None
         self._pa = None
         self._dma = None
+        self._chirp = None
         self._started_us = 0
         self._recording = False
         self._final_count = 0
@@ -208,6 +250,56 @@ class Recorder:
             ctrl=ctrl,
             trigger=True,
         )
+
+    def chirp(self, i2c):
+        """Play the activation tone and wait it out. Returns True if it sounded.
+
+        Blocking on purpose. Capture must not begin until the speaker is silent
+        again -- the microphone hears it, and a 70 ms tone at the head of every
+        utterance would be enrolled into every template as if it were speech.
+
+        Brings up the DOUT state machine on first use. `_setup` deliberately
+        does not, because the ELIZA program otherwise plays nothing; the state
+        machine IDs were chosen to match shake.py so this could be added without
+        disturbing anything.
+
+        Never raises: a silent chirp is a worse toy, not a broken one, so a
+        failure here must not stop the board listening.
+        """
+        if not self._ensure(i2c):
+            return False
+        try:
+            if self._chirp is None:
+                self._audio.dout_pio_init()
+                self._chirp = _build_chirp(self.rate)
+            # The DAC comes out of reset muted and `es8311.init()` does not
+            # clear it -- shake.py:84 unmutes and this module never did, because
+            # until now it only ever recorded. Without this the chirp plays into
+            # a muted output and reports success: no exception, no sound. That
+            # is the failure mode CLAUDE.md exists for, and it cost a bench
+            # session here.
+            self._codec.mute(False)
+            self._codec.volume_set(CHIRP_VOLUME)
+            self._pa.value(1)
+            self._audio.dma_play_words_async(self._chirp)
+            while not self._audio.play_finished():
+                time.sleep_ms(2)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            print("chirp failed (%s: %s)" % (type(exc).__name__, exc))
+            return False
+        finally:
+            # Drop the amp and the volume whatever happened: an amp left on is
+            # both a battery drain and an open acoustic path into the capture.
+            try:
+                self._pa.value(0)
+                self._codec.volume_set(DAC_VOLUME)
+                # Re-mute for the same reason the amp is dropped: the speaker is
+                # an open acoustic path back into the microphone we are about to
+                # record with.
+                self._codec.mute(True)
+            except Exception:  # noqa: BLE001
+                pass
 
     def start(self, i2c):
         """Begin capturing into the buffer. Returns True if recording started.

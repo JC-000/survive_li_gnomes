@@ -17,3 +17,12 @@ __pycache__/
 
 # Backup artifacts from claude-code-rig tooling
 .gitignore.backup.*
+
+# Generated speech corpora and enrolment recordings. All reproducible --
+# corpora from tools/say_corpus.py and tools/train_corpus.py, recordings from
+# tools/enrol.py -- and far too large to version.
+corpus-tts/
+corpus_noise/
+corpus*/
+takes/
+takes-oov/

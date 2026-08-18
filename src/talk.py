@@ -345,6 +345,15 @@ def listen_once(inputs, recorder, detector, i2c):
     release.
     """
     detector.reset()
+
+    # Say "listening" before capturing anything. This board has no vibration
+    # motor and no LED, and the panel cannot acknowledge a press in under
+    # ~583 ms, so the speaker is the only instant feedback available -- and
+    # without it a press-and-hold is indistinguishable from a dead board, which
+    # is exactly how the first hardware test failed. chirp() blocks until the
+    # speaker is quiet again, so none of it lands in the recording.
+    recorder.chirp(i2c)
+
     if not recorder.start(i2c):
         return None
 

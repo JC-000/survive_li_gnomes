@@ -171,6 +171,11 @@ def main():
         help="comma-separated subset of the vocabulary, for re-recording a few",
     )
     ap.add_argument(
+        "--allow-any",
+        action="store_true",
+        help="permit words outside the vocabulary, for recording negatives",
+    )
+    ap.add_argument(
         "--grouped",
         action="store_true",
         help="all repetitions of a word together, instead of round-robin passes",
@@ -179,8 +184,21 @@ def main():
 
     words = [w.strip().upper() for w in args.words.split(",")] if args.words else list(VOCABULARY)
     unknown = [w for w in words if w not in VOCABULARY]
+    if unknown and not args.allow_any:
+        # On by default, and it has already earned its place: this list is
+        # derived from vocab.FORMS precisely because an earlier hand-written
+        # copy drifted and would have had someone record a retired word.
+        sys.exit("not in the vocabulary: %s\n"
+                 "(pass --allow-any if these are deliberate negatives)"
+                 % ", ".join(unknown))
     if unknown:
-        sys.exit("not in the vocabulary: %s" % ", ".join(unknown))
+        # Negatives are what make a real-speaker *precision* figure possible.
+        # Without them the only measurable false fire is one keyword mistaken
+        # for another, which is the rarer failure -- the one that matters is the
+        # ball answering confidently when the user said something ordinary.
+        # Record them somewhere they cannot be mistaken for template material.
+        print("recording %d word(s) outside the vocabulary as negatives: %s"
+              % (len(unknown), ", ".join(unknown)))
 
     os.makedirs(args.outdir, exist_ok=True)
     doc = load_manifest(args.outdir)

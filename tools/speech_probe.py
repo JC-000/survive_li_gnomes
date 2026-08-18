@@ -800,8 +800,9 @@ try:
     ordered = ([c for c in fx.CASES if c[0] == "tw_stress"]
                + [c for c in fx.CASES if c[0] != "tw_stress"])
     for name, why, pcm, exp in ordered:
-        samples = array("h")
-        samples.frombytes(pcm)
+        # array.frombytes() is CPython-only; MicroPython has no such method.
+        # The constructor takes a buffer on both, which is what we want here.
+        samples = array("h", pcm)
 
         started = time.ticks_us()
         got, frames = spotter.features(samples, 0, len(samples))
