@@ -61,7 +61,14 @@ MAX_SAMPLES = SAMPLE_RATE * MAX_RECORD_MS // 1000
 # units are whatever the vendor's table means. 3 is the vendor default and a
 # starting point for speech at arm's length -- UNVERIFIED, and the first thing to
 # adjust if the probe reports a railed or inaudible signal.
-MIC_GAIN = 3
+# Measured at the bench: at gain 3 every real utterance pinned full scale --
+# 849 clipped runs across ten words, mean run 2-3 samples, which is a waveform
+# touching the rail at its peaks rather than the isolated glitches seen in
+# silence. The noise floor scales cleanly with this setting (IMN 323/137/75/36
+# at gains 3/2/1/0), so dropping two steps buys ~4x of headroom and costs no
+# signal-to-noise: the room scales with the speech. It also costs the endpointer
+# nothing, because IMX/IMN is gain-invariant -- scaling every sample cancels.
+MIC_GAIN = 1
 
 # Playback is not used by the ELIZA program (see talk.py), but the codec still
 # has a DAC and a power amp attached, so the amp is explicitly dropped.

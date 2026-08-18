@@ -98,17 +98,49 @@ def build_templates(rows, voices, takes):
     return templates, n
 
 
+def _real_rows(takes, takes_oov):
+    """Enrolment WAVs -> corpus-shaped rows, keywords and negatives together.
+
+    Both directories are read into one query set because precision is only
+    meaningful over both: keywords alone can only count "fired as the wrong
+    keyword", and the failure this project fears is firing at all on something
+    ordinary.
+    """
+    rows = []
+    for directory, is_oov in ((takes, False), (takes_oov, True)):
+        if not directory or not os.path.isdir(directory):
+            continue
+        for name in sorted(os.listdir(directory)):
+            if not name.endswith(".wav"):
+                continue
+            form = name.rsplit("_", 1)[0].lower()
+            label = si_features.UNKNOWN if is_oov else (
+                vocab.label_of(form) or si_features.UNKNOWN)
+            rows.append({"wav": os.path.join(directory, name), "form": form,
+                         "label": label, "voice": "human", "split": "real",
+                         "category": "unknown" if is_oov else "word",
+                         "variant_of": None})
+    return rows
+
+
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("manifest")
     ap.add_argument("--voices", type=int, default=3,
                     help="how many training voices supply templates")
-    ap.add_argument("--takes", type=int, default=1,
+    ap.add_argument("--template-takes", type=int, default=1,
                     help="templates per spoken form per voice")
     ap.add_argument("--split", default="val", help="which split to query with")
     ap.add_argument("--limit", type=int, default=400,
                     help="cap on query utterances; 0 for all")
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--takes", default=None,
+                    help="query with a directory of real enrolment recordings "
+                         "instead of the held-out synthetic split")
+    ap.add_argument("--takes-oov", default=None,
+                    help="directory of real out-of-vocabulary recordings; "
+                         "without these, real-speaker precision cannot count "
+                         "the failure that matters")
     args = ap.parse_args(argv[1:])
 
     rows = si_features.read_manifest(args.manifest)
@@ -132,10 +164,22 @@ def main(argv):
           % (len(picked), ", ".join(sorted(picked))))
 
     t0 = time.time()
-    templates, n_templates = build_templates(train, picked, args.takes)
+    templates, n_templates = build_templates(train, picked, args.template_takes)
     print("%d classes, %d templates, built in %.1f s"
           % (len(templates), n_templates, time.time() - t0))
     matcher = dtwmod.Matcher(templates)
+
+    if args.takes:
+        # Real speech replaces the synthetic query set. Templates still come
+        # from `say` voices -- that is the whole point: it is the incumbent,
+        # enrolled synthetically, meeting a person.
+        query = _real_rows(args.takes, args.takes_oov)
+        print("querying with %d REAL utterances (%d in-vocabulary, %d "
+              "must-stay-silent)"
+              % (len(query),
+                 sum(1 for r in query if r["label"] != si_features.UNKNOWN),
+                 sum(1 for r in query if r["label"] == si_features.UNKNOWN)))
+        args.limit = 0
 
     if args.limit and len(query) > args.limit:
         rng.shuffle(query)

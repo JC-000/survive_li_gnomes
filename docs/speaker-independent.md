@@ -102,6 +102,45 @@ is not a measurement of its source.** A background estimate is a number about
 the first 100 ms of a buffer, not about the room, and the two only coincide when
 nothing else is in that buffer.
 
+### The first real-speaker number, and why it is provisional
+
+`tools/si_dtw_control.py` now takes `--takes` and `--takes-oov`, so the
+incumbent can be run against a person directly: **templates from `say` voices,
+queries from the human.** That is the deliverable's baseline and it needs no
+trained model and no generated corpus.
+
+Measured once over the full 22-utterance set (10 keywords, 12 negatives), 66
+templates from 3 synthetic voices:
+
+| | |
+| --- | --- |
+| DTW top-1 over in-vocabulary utterances | **0.200 — 2 of 10** |
+| recall at precision 1.000 | **0.000** |
+| — | *no threshold fires without a false positive* |
+
+For contrast, the same matcher speaker-*dependently* is 0.966, and
+speaker-independently across synthetic voices it was 0.233 (*dry-run*). Against
+a real person it reaches **zero usable operating point**: the two utterances it
+ranks correctly never clear a threshold before a false fire appears.
+
+**Treat this as provisional, for a reason that is not statistical.** The take
+directories were being rewritten while these measurements ran — the set went
+from 10 files, to 22, to 5 within a few minutes as the user re-recorded. The
+22-file run above is the one complete pass over the set the lead described, but
+it has not been reproduced on a stable set, and a run minutes later over a
+different 5 files gave 0 of 5. Re-run it first thing; it is one command now.
+
+Also, and independently: **n=1 take per word, one speaker, one session, one
+room.** Enough to ask "does synthetic enrolment transfer to a person at all",
+which is the question. Not enough for a confidence interval on anything.
+
+If it holds, it is the most consequential number in this document — it says the
+*incumbent* does not survive synthetic enrolment either, so a CNN is not being
+compared against a working alternative but against another approach that also
+needs real recordings. That would make "ship DTW with synthetic templates" not
+merely the fallback but a non-option, and would leave speaker-dependent
+enrolment as the only thing measured to work.
+
 ### What is still true
 
 - **si-corpus's SNR result stands and is independent of this bug.** The same
@@ -113,12 +152,24 @@ nothing else is in that buffer.
   corpus**, which draws gain and tilt but never clipping, so real audio carries a
   distortion no synthetic example contains. That is a training-data gap needing
   an augmentation axis, and it is unaffected by the chirp fix.
-- **The feature dynamic-range gap is real but half of it was the chirp.**
-  Re-measured on clean captures, real int8 patches have a standard deviation of
-  **19.30 against synthetic 43.12** — it was 10.29 before the fix. So a genuine
-  ~2.2x contrast gap remains, with p01/p99 of -54/+54 against -128/+89, while the
-  per-band *shape* still agrees to within about 1 dB. Clipping is now the
-  outstanding confound; this wants re-measuring once captures stop saturating.
+- **The feature dynamic-range gap is real, and the chirp was about 40% of it.**
+  Settled as a controlled comparison, since the contaminated originals are kept
+  in `takes-contaminated/`: standard deviation of the int8 patches is **11.12
+  contaminated, 19.30 clean, 43.12 synthetic**. So the chirp accounted for much
+  of the gap and a **~2.2x** one survives it.
+
+  Part of the remainder is an artefact of the comparison rather than of speech.
+  **3.27% of synthetic cells sit at the -128 clamp against 0.00% of real ones** —
+  `say` renders true digital silence in the lead and tail, which after per-band
+  mean subtraction is a large negative excursion that a microphone with a noise
+  floor can never produce. Excluding those cells takes synthetic from 43.12 to
+  36.50, so it explains some of the gap and not most of it.
+
+  The likeliest explanation for what is left is that **the dry-run corpus has no
+  additive noise at all**, while the real corpus does — noise raises the floor
+  and compresses exactly this contrast. That makes this measurement one that
+  *must* be redone against the generated corpus rather than against the dry run,
+  and clipping remains a second confound until captures stop saturating.
 
 ## Labels, used as [speech-design.md](speech-design.md) uses them
 

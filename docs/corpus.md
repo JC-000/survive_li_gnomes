@@ -211,11 +211,11 @@ routes, synthetic additive noise and real room noise, both land on the ratio.
 Every VAD threshold in [speech.md](speech.md) was tuned on clean single-voice
 synthetic audio at high SNR, and that is the thing to suspect.
 
-### The takes themselves are fine now
+### The takes themselves are fine now, and the cause was neither thing we said
 
-Re-recorded louder at 18:16 on 2026-08-18, and the set was still growing while
-this was written — treat the counts as a snapshot, not a total. Measured over
-the eight present at the time:
+Re-recorded at 18:16 on 2026-08-18, and the set was still growing while this
+was written — treat the counts as a snapshot, not a total. Measured over the
+eight present at the time:
 
 | | |
 | --- | --- |
@@ -228,6 +228,27 @@ The lengths now sit inside the synthetic range, which is the check that
 matters: an endpointer returning a plausible, word-dependent duration is doing
 its job, and one returning the same length regardless of word is the failure
 [speech.md](speech.md) warns about.
+
+**The cause was the activation chirp, not the room and not the gain.** The tone
+rings ~180 ms and decays over a further ~140 ms, and `src/vad.py` estimates its
+background from the **first 100 ms** — so the tail of the chirp was being
+measured as the noise floor. That inflates `IMN`, which is the denominator of
+the 5.706 ratio, and no amount of speaking or gain-setting could beat a floor
+made of the device's own beep. `src/listen.py` now waits it out
+(`CHIRP_SETTLE_MS = 140`); its comment records 14 of 22 recordings rejected
+before the fix.
+
+Worth keeping because of how it was found. Two of us measured the same failure
+from different sides — synthetic SNR sweeps here, real captures there — derived
+a correct threshold condition from the algebra, and then each attached a
+plausible wrong cause to it: "the gain is too high" and "the room is too loud".
+Both were confidently argued, one was gain-invariant and provably could not
+have been it, and the actual fault was a bug one stage upstream that neither
+measurement could see. **The derivation was vindicated and both conclusions
+drawn from it were wrong.** The `docs/speech-design.md` habit of separating
+*measured* from *estimate* would not have caught this either: every number
+involved was genuinely measured. What was inferred was the causal story
+attached to them.
 
 **The clipping has not gone away and is a genuine gap.** Every take peaks at
 full scale, 12 to 778 saturated samples. It is not what was defeating the
