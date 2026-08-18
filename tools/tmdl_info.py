@@ -3,12 +3,15 @@
 
     python3 tools/tmdl_info.py model.tmdl [--pad]
 
-**Status: host-only static analysis, verified against emlearn's own shipped
-model.** It reads a file and compares numbers in it against constants read out
-of TinyMaix's source. No part of it has run on the board, and a model it passes
-is one that *should* load -- whether `emlearn_cnn_int8` loads at all on this
-board's `armv7emsp` build is a separate and still-open question, which
-`tools/cnn_probe.py` exists to answer.
+**Status: host-only static analysis, and its verdicts have now been checked
+against the board.** It reads a file and compares numbers in it against
+constants read out of TinyMaix's source.
+
+`emlearn_cnn_int8` **does** load on this board's `armv7emsp` build (measured
+2026-08-18), and models this tool passes do load and run correctly. Its central
+check was confirmed the hard way: the same model loaded **unpadded** overwrote
+1164 bytes outside its allocation while raising nothing, and **padded**
+overwrote none. Passing this tool is not a formality.
 
 `emlearn_cnn_int8` is the only trained-model path that stays inside MicroPython
 on this board, and it is a thin wrapper around Sipeed's TinyMaix. Thin enough

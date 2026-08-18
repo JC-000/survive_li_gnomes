@@ -9,18 +9,24 @@ Runs on the device. Touches no peripheral -- no panel, no codec, no I2C -- so it
 is safe to run against a board that is mid-way through anything else, and it
 leaves nothing behind but the files copied above.
 
-## Status: this file has never been run on hardware
+## Status: run on hardware 2026-08-18, and it answered the question
 
-It was written and dry-run against CPython with viper stubbed, which proves it
-*executes* -- every branch, every format string -- and proves nothing else. The
-expected values quoted in the comments below (~12 KB import cost, 2x the file
-resident, cycles per MAC) are **predictions from reading source and from this
-project's earlier viper measurements**, not observations. The whole point of the
-script is that they cannot be settled any other way.
+**`emlearn_cnn_int8` imports, loads and classifies correctly on this board.**
+Sections 0-6 all ran. The measured results are in `docs/cnn-on-device.md`; the
+headlines are 12096 B of heap at import, 10/10 on the shipped MNIST digits at
+3205 us each, and 66.6 ms for the 1.106 MMAC keyword model.
 
-When it does run, the numbers it prints replace those predictions, and
-`docs/cnn-on-device.md` should be updated from its output rather than from this
-docstring.
+Two of the predictions quoted in the comments below were wrong and are left in
+place, because the gap is the useful part: TinyMaix costs **~9 cycles/MAC**, not
+the ~3.5 that reading `tm_dot_prod` suggested -- the estimate missed the `sbuf`
+im2col gather before every output pixel. The viper whole-layer figure came in at
+**62.1 cycles/MAC** against 36 predicted, while the *isolated* inner loop matched
+almost exactly (41.0 plain, 31.2 unrolled, against 40 and 32). So the cost model
+was sound and its application to a full layer was not.
+
+Section 6 confirmed the scratch-buffer overrun with a control: **1164 bytes
+overwritten with an unpadded model, 0 with the padded one**, same script and
+input.
 
 ## What it is for
 

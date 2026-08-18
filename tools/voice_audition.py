@@ -68,6 +68,7 @@ those are different numbers.
 """
 
 import argparse
+import math
 import os
 import re
 import struct
@@ -296,6 +297,45 @@ def splice(head, tail, rate):
     return head[:len(head) - n] + mixed + tail[n:]
 
 
+def assemble(pieces, rate):
+    """Splice several renders in order. Returns (samples, join offsets).
+
+    The offsets are where the joins ended up, so `seam_jumps` can go and look
+    at them afterwards.
+    """
+    out, joins = list(pieces[0]), []
+    for piece in pieces[1:]:
+        joins.append(len(out) - int(XFADE_MS * rate / 1000))
+        out = splice(out, list(piece), rate)
+    return out, joins
+
+
+def seam_jumps(samples, rate, joins):
+    """Pitch discontinuity either side of each join, in semitones.
+
+    This does **not** decide whether a seam is acceptable -- that is an ear
+    judgement and nothing here substitutes for it. What it does is put a number
+    on the thing the ear is being asked about, so "the splice sounds fine" and
+    "the splice sounds wrong" can each be checked against what is physically
+    there. A join with a 0.2-semitone step and one with a 4-semitone step are
+    different problems, and without measuring you cannot tell which you have.
+
+    A reading of 0.0 means one side was unvoiced -- a stop or a silence -- where
+    there is no pitch to be discontinuous, and those joins are the ones that
+    tend to survive.
+    """
+    probe = int(SEAM_PROBE_MS * rate / 1000)
+    out = []
+    for at in joins:
+        before = median_f0(samples[max(0, at - probe):at], rate)
+        after = median_f0(samples[at:at + probe], rate)
+        if before and after:
+            out.append(abs(12 * math.log(after / before, 2)))
+        else:
+            out.append(0.0)
+    return out
+
+
 def duration(path):
     with wave.open(path) as handle:
         return handle.getnframes() / handle.getframerate()
@@ -390,20 +430,39 @@ def build_shortlist(outdir):
 
     # The seam, in the leading preset only -- one comparison, not a matrix.
     warm = presets["p3-warm"]
-    for seam_id, head_text, tail_text in SEAMS:
-        head = os.path.join(audio, "seam__%s__head.wav" % seam_id)
-        tail = os.path.join(audio, "seam__%s__tail.wav" % seam_id)
-        warm.render(PRIMARY, head_text, head)
-        warm.render(PRIMARY, tail_text, tail)
-        rate, head_s = read_wav(head)
-        _, tail_s = read_wav(tail)
-        joined = splice(trim(head_s, rate), trim(tail_s, rate), rate)
-        write_wav(os.path.join(audio, "seam__%s__ASSEMBLED.wav" % seam_id), rate, joined)
-        whole = os.path.join(audio, "seam__%s__WHOLE.wav" % seam_id)
-        warm.render(PRIMARY, head_text + " " + tail_text, whole)
-        print("  seam %-39s assembled vs whole" % seam_id)
+    seams = []
+    for seam_id, head_text, filler, tail_text in SEAMS:
+        texts = [t for t in (head_text, filler, tail_text) if t]
+        rendered = []
+        for i, text in enumerate(texts):
+            part = os.path.join(audio, "seam__%s__part%d.wav" % (seam_id, i))
+            warm.render(PRIMARY, text, part)
+            rate, samples = read_wav(part)
+            rendered.append(trim(samples, rate))
 
-    return combos
+        joined, joins = assemble(rendered, rate)
+        write_wav(os.path.join(audio, "seam__%s__ASSEMBLED.wav" % seam_id), rate, joined)
+
+        whole_path = os.path.join(audio, "seam__%s__WHOLE.wav" % seam_id)
+        warm.render(PRIMARY, " ".join(texts), whole_path)
+        _, whole_s = read_wav(whole_path)
+        whole_s = trim(whole_s, rate)
+
+        # The same measurement on the whole rendering, at the point the join
+        # would have fallen, scaled for the two clips being different lengths.
+        # Without this control a 1.5-semitone step at a splice looks damning
+        # when the intact sentence steps by nearly as much at the same word.
+        scale = len(whole_s) / max(1, len(joined))
+        control = seam_jumps(whole_s, rate, [int(at * scale) for at in joins])
+
+        seams.append((seam_id, texts, seam_jumps(joined, rate, joins), control,
+                      len(joined) / rate, len(whole_s) / rate))
+        print("  seam %-22s %d join(s)  assembled %s  vs whole %s"
+              % (seam_id, len(joins),
+                 "/".join("%.1f" % v for v in seams[-1][2]),
+                 "/".join("%.1f" % v for v in control)))
+
+    return combos, seams
 
 
 def corpus_lines():
@@ -557,7 +616,7 @@ def main():
 
     os.makedirs(args.outdir, exist_ok=True)
     print("rendering shortlist...")
-    combos = build_shortlist(args.outdir)
+    combos, seams = build_shortlist(args.outdir)
 
     lines = ["# Voice audition", "",
              "Rendered by `tools/voice_audition.py`. Play a `__REEL.wav` to hear",
@@ -580,14 +639,28 @@ def main():
     lines += ["", "## Lines", ""]
     for line_id, text in LINES:
         lines.append("- `%s` — \"%s\"" % (line_id, text))
-    lines += ["", "## The seam", "",
-              "`__ASSEMBLED` is a stem and a noun rendered separately and spliced;",
-              "`__WHOLE` is the same sentence rendered in one pass. Same voice,",
-              "same preset. The difference is the intonation contour across the",
-              "join, and whether it matters is a judgement for ears, not a",
-              "measurement.", ""]
-    for seam_id, head, tail in SEAMS:
-        lines.append("- `seam__%s__*.wav` — \"%s\" + \"%s\"" % (seam_id, head, tail))
+    lines += ["", "## The seam — the one comparison that decides the budget", "",
+              "`__ASSEMBLED` is the sentence built from separately rendered pieces",
+              "and spliced; `__WHOLE` is the same sentence rendered in one pass.",
+              "Same voice, same preset. Play them back to back.", "",
+              "**`medial-*` are the honest test.** Their slot sits mid-sentence, so",
+              "the tail fragment has to start mid-clause and `say` gives it a",
+              "sentence-initial contour it should not have. `trailing-*` have the",
+              "slot at the end, one join, and are the easy case — included so the",
+              "difference between the two is audible rather than asserted.", "",
+              "The step column is the pitch discontinuity measured either side of",
+              "each join, in semitones, against the same measurement taken on the",
+              "intact sentence at the same point. It does **not** say whether a",
+              "seam is acceptable — only an ear does that — it says how big the",
+              "thing being judged is. A 0.0 means one side was unvoiced, where",
+              "there is no pitch to be discontinuous.", "",
+              "| Files | Sentence | Joins | Step, assembled | Step, whole |",
+              "| --- | --- | --- | --- | --- |"]
+    for seam_id, texts, jumps, control, _, _ in seams:
+        lines.append("| `seam__%s__{ASSEMBLED,WHOLE}.wav` | %s | %d | %s | %s |"
+                     % (seam_id, " / ".join(texts), len(jumps),
+                        ", ".join("%.1f st" % v for v in jumps),
+                        ", ".join("%.1f st" % v for v in control)))
 
     if args.budget:
         preset = {p.name: p for p in PRESETS}["p3-warm"]

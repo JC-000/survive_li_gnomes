@@ -7,9 +7,13 @@
 proves the *algebra*. It cannot prove the *port*, because viper's `int` is a
 32-bit machine word that wraps silently while CPython's is unbounded -- so the
 one failure the bound exists to prevent is the one failure this file is
-structurally unable to observe. Section 4 of `tools/cnn_probe.py` drives the
-same worst case on the device for exactly that reason, and **it has not been
-run**. Nothing here has touched hardware.
+structurally unable to observe.
+
+Section 4 of `tools/cnn_probe.py` drives the same worst case on the device for
+exactly that reason, and **it was run on 2026-08-18: the bound held exactly.**
+`peak |acc>>r|` came back 36864 and 49152, matching the algebra here to the
+unit, with requant products at 28.12% and 37.50% of int32 against the 50.00%
+the Q14 design permits. So the port agrees with this file where it counts.
 
 This is the host reference for the fallback that `tools/cnn_probe.py` section 4
 measures and that `src/` would carry if `emlearn_cnn_int8` turns out not to load
