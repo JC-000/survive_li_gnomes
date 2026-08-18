@@ -2,6 +2,11 @@
 # (Apache-2.0). Source: examples/MicroPython/07_ES8311/audio_pio_mpy.py
 #   https://github.com/waveshareteam/RP2350-Touch-ePaper-1.54
 # Codec register sequences and PIO programs are hardware-specific -- do not tidy.
+#
+# Changes from the vendor original:
+#   1. Added dma_play_words_async() / play_finished() -- see the DEVIATION
+#      comment there. The stock play helpers busy-wait, which forces sound and
+#      the e-paper refresh to happen one after the other.
 
 import rp2
 from machine import Pin
@@ -352,6 +357,40 @@ class AudioPIO:
         )
         while self.dma_tx.active():
             pass
+
+    # ---- DEVIATION FROM VENDOR CODE ----------------------------------------
+    # Non-blocking playback. dma_play_words() ends with `while
+    # self.dma_tx.active(): pass`, so the CPU sits idle for the whole clip and
+    # the e-paper refresh can only start once the sound has finished. The DMA
+    # engine feeds the PIO on its own, so triggering and returning lets audio and
+    # the ~2.6 s panel refresh overlap. Call play_finished() before dropping the
+    # power amp.
+    def dma_play_words_async(self, buf):
+        if DMA is None:
+            raise RuntimeError("rp2.DMA is not available in this MicroPython firmware")
+        if self.dma_tx is None:
+            self.dma_tx = DMA()
+        self._restart_tx()
+        ctrl = self._dma_pack_ctrl(
+            self.dma_tx,
+            size=2,
+            inc_read=True,
+            inc_write=False,
+            treq_sel=self._pio_dreq(self.sm_dout_id, True),
+            high_pri=True,
+            bswap=False
+        )
+        self.dma_tx.config(
+            read=buf,
+            write=self.sm_dout,
+            count=len(buf),
+            ctrl=ctrl,
+            trigger=True
+        )
+
+    def play_finished(self):
+        return self.dma_tx is None or not self.dma_tx.active()
+    # ------------------------------------------------------------------------
 
     def unpack_words_to_i16(self, words, out_i16):
         # Debug helper for older 32-bit RX experiments.

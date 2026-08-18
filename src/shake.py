@@ -10,6 +10,7 @@ be allowed to stop the answer appearing.
 """
 
 from array import array
+import time
 
 import board
 
@@ -130,8 +131,13 @@ class Shaker:
 
         self._clip = _generate()
 
-    def play(self, i2c):
-        """Play the shake. Returns True if sound actually came out."""
+    def start(self, i2c):
+        """Begin playback and return immediately. Pair with finish().
+
+        Split from a blocking play() so the shake overlaps the e-paper refresh
+        instead of preceding it -- the DMA engine feeds the codec on its own
+        while the CPU drives SPI.
+        """
         if self.available is False:
             return False
         try:
@@ -139,14 +145,36 @@ class Shaker:
                 self._setup(i2c)
                 self.available = True
             self._pa.value(1)
-            try:
-                self._audio.dma_play_words(self._clip)
-            finally:
-                self._pa.value(0)
+            self._audio.dma_play_words_async(self._clip)
             return True
         except Exception as exc:  # noqa: BLE001 -- audio must never break the ball
             print("audio unavailable (%s: %s)" % (type(exc).__name__, exc))
             self.available = False
-            if self._pa is not None:
-                self._pa.value(0)
+            self._drop_pa()
             return False
+
+    def finish(self):
+        """Wait out any remaining audio, then drop the power amp.
+
+        Normally a no-op: the clip is ~0.54 s and the refresh it overlaps is
+        ~2.6 s, so playback has long finished by the time this is called.
+        """
+        try:
+            if self._audio is not None:
+                while not self._audio.play_finished():
+                    time.sleep_ms(5)
+        except Exception as exc:  # noqa: BLE001
+            print("audio finish failed (%s: %s)" % (type(exc).__name__, exc))
+        finally:
+            self._drop_pa()
+
+    def _drop_pa(self):
+        if self._pa is not None:
+            self._pa.value(0)
+
+    def play(self, i2c):
+        """Blocking play. Kept for probes and tests; main.py uses start/finish."""
+        if not self.start(i2c):
+            return False
+        self.finish()
+        return True

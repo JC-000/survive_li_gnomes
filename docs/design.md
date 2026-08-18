@@ -68,10 +68,17 @@ beats an unattended device that has silently bricked itself on a stuck line.
 
 ## Audio
 
-A shake sound plays before the answer is drawn — the order a real 8-ball works
-in. It is synthesised on the device: three decaying bursts of low-passed noise,
+A shake sound plays **while** the panel refreshes, not before it. It is
+synthesised on the device: three decaying bursts of low-passed noise,
 integer-only, which reads as a die tumbling in liquid. ~50 KB as packed stereo
 frames, versus shipping a WAV on a 3 MB filesystem.
+
+The vendor's `dma_play_words` ends with `while self.dma_tx.active(): pass`, which
+forced sound and screen to happen strictly one after the other — 0.54 s of noise,
+then a silent refresh. `dma_play_words_async` triggers the transfer and returns:
+the DMA engine feeds the codec while the CPU drives SPI, so `shaker.start()`
+before the refresh and `shaker.finish()` after it overlaps the two. Press time
+dropped from ~3.1 s to ~1.6 s as a side effect.
 
 **Audio is strictly optional and must stay that way.** Every entry point in
 `shake.py` swallows its own exceptions and sets `available = False` on failure.
@@ -94,11 +101,26 @@ After drawing, `wait_for_release` re-samples the inputs instead of clearing the
 the 5 s timeout looked like a fresh press on the very next poll. The timeout
 itself exists so a touch controller that latches INT low cannot wedge the loop.
 
-## Layout
+## Layout and text size
 
-200 × 200, 1-bit. `framebuf`'s built-in font is 8 × 8 and cannot be scaled, so:
+200 × 200, 1-bit. `framebuf`'s built-in font is fixed at 8 × 8 and there is no
+scaled blit, so `magic8._text_scaled` renders glyphs into a scratch mono buffer
+and paints each set pixel as a `scale × scale` block. Costs ~150 ms for a screen
+of text, which is nothing beside the panel refresh.
 
-- The "8" is drawn as two stacked white rings inside a filled black disc. An `8`
-  drawn with `text()` would be an 8 px speck inside a 68 px ball.
-- Text wraps at 23 characters, not the 25 that technically fit — 25 runs edge to
-  edge and collides with the border. Only two answers need a second line.
+`magic8.fit()` picks the **largest size each answer actually fits at**, rather
+than one size for everything:
+
+| Scale | Glyph | Columns | Max lines | Answers |
+| --- | --- | --- | --- | --- |
+| 3× | 24 px | 8 | 2 | 8 |
+| 2× | 16 px | 12 | 4 | 12 |
+| 1× | 8 px | 23 | 6 | none currently |
+
+A size is rejected if any single word would have to be hard-split — a word
+broken mid-way reads far worse than one size smaller. That is what keeps
+"Concentrate" (11 characters) from being chopped at 3×.
+
+The ball is deliberately smaller than it could be (r = 28, not 34): legible text
+matters more than a big graphic. The "8" is two stacked white rings inside a
+filled black disc, because a `text()` "8" would be an 8 px speck inside it.

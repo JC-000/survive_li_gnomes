@@ -6,6 +6,8 @@ exercised without a display attached.
 
 import os
 
+import framebuf
+
 # The twenty canonical answers: ten affirmative, five non-committal, five
 # negative. Keep all twenty and keep the ratio -- it is what makes the toy feel
 # right.
@@ -32,15 +34,29 @@ ANSWERS = (
     "Very doubtful",
 )
 
-# framebuf's built-in font is 8x8, so a 200 px panel fits 25 characters -- but a
-# full 25 would run edge to edge and collide with the border, so wrap at 23.
-# Only "Concentrate and ask again" and "Better not tell you now" need two lines.
-_COLS = 23
-_CHAR_W = 8
-_LINE_H = 12
-
 BLACK = 0x00
 WHITE = 0xFF
+
+_CHAR_W = 8  # framebuf's built-in font; not scalable, hence _text_scaled below
+
+# Vertical layout. The ball is deliberately smaller than it could be: legible
+# text matters more than a big graphic.
+_BALL_CY = 40
+_BALL_R = 28
+_RULE_Y = 78
+_ANSWER_TOP = 88
+_ANSWER_H = 80
+_FOOTER_Y = 180
+
+# Candidate text sizes, largest first: (scale, columns, max_lines).
+# Columns are 200 // (8 * scale) minus a margin; max_lines is _ANSWER_H // line
+# height. render() picks the first size the answer fits in without splitting a
+# word mid-way.
+_SIZES = ((3, 8, 2), (2, 12, 4), (1, 23, 6))
+
+
+def _line_height(scale):
+    return scale * _CHAR_W + 4
 
 
 def _rand_below(n):
@@ -66,7 +82,7 @@ def pick(exclude=None):
             return answer
 
 
-def wrap(text, cols=_COLS):
+def wrap(text, cols):
     """Greedy word wrap. Words longer than a line are hard-split."""
     lines = []
     line = ""
@@ -89,18 +105,57 @@ def wrap(text, cols=_COLS):
     return lines
 
 
-def _centered(fb, text, y, colour=BLACK):
-    fb.text(text, (200 - len(text) * _CHAR_W) // 2, y, colour)
+def fit(text):
+    """Largest (scale, lines) this text fits in the answer area.
+
+    Rejects a size if any single word would have to be hard-split, since a word
+    broken across lines reads far worse than one size smaller.
+    """
+    longest_word = max(len(w) for w in text.split())
+    for scale, cols, max_lines in _SIZES:
+        if longest_word > cols:
+            continue
+        lines = wrap(text, cols)
+        if len(lines) <= max_lines:
+            return scale, lines
+    return 1, wrap(text, _SIZES[-1][1])
 
 
-def draw_ball(fb, cx=100, cy=46, r=34):
+def _text_scaled(fb, text, x, y, colour, scale):
+    """Draw text at an integer scale by pixel-doubling the 8x8 built-in font.
+
+    framebuf has no scaled blit and the built-in font is fixed at 8x8, so the
+    glyphs are rendered into a scratch mono buffer and each set pixel is painted
+    as a scale x scale block. Costs a few tens of ms for a screen of text, which
+    is nothing against a ~2.6 s panel refresh.
+    """
+    if scale == 1:
+        fb.text(text, x, y, colour)
+        return
+    width = len(text) * _CHAR_W
+    stride = (width + 7) // 8
+    glyphs = framebuf.FrameBuffer(bytearray(stride * 8), width, 8, framebuf.MONO_HLSB)
+    glyphs.fill(0)
+    glyphs.text(text, 0, 0, 1)
+    for row in range(8):
+        for col in range(width):
+            if glyphs.pixel(col, row):
+                fb.fill_rect(x + col * scale, y + row * scale, scale, scale, colour)
+
+
+def _centered(fb, text, y, scale=1, colour=BLACK):
+    x = (200 - len(text) * _CHAR_W * scale) // 2
+    _text_scaled(fb, text, x, y, colour, scale)
+
+
+def draw_ball(fb, cx=100, cy=_BALL_CY, r=_BALL_R):
     """The 8-ball: a filled black disc with a white '8' built from two rings.
 
-    The 8x8 built-in font can't be scaled, so an '8' drawn with text() would be
-    a speck inside a 68 px disc. Two stacked rings read correctly at this size.
+    The 8x8 built-in font can't be scaled by framebuf, so an '8' drawn with
+    text() would be a speck inside the disc. Two stacked rings read correctly.
     """
     fb.ellipse(cx, cy, r, r, BLACK, True)
-    for ring_cy, ring_r in ((cy - 12, 11), (cy + 12, 14)):
+    for ring_cy, ring_r in ((cy - 10, 9), (cy + 10, 12)):
         # Two passes for a 2 px stroke -- a 1 px white line on black is faint
         # after the panel's dithering.
         fb.ellipse(cx, ring_cy, ring_r, ring_r, WHITE, False)
@@ -112,13 +167,13 @@ def render(fb, answer, footer=None):
     fb.fill(WHITE)
     fb.rect(2, 2, 196, 196, BLACK)
     draw_ball(fb)
-    fb.hline(14, 92, 172, BLACK)
+    fb.hline(14, _RULE_Y, 172, BLACK)
 
-    lines = wrap(answer)
-    # Centre the block vertically in the space between the rule and the footer.
-    top = 104 + max(0, (60 - len(lines) * _LINE_H) // 2)
+    scale, lines = fit(answer)
+    line_h = _line_height(scale)
+    top = _ANSWER_TOP + max(0, (_ANSWER_H - len(lines) * line_h) // 2)
     for index, line in enumerate(lines):
-        _centered(fb, line, top + index * _LINE_H)
+        _centered(fb, line, top + index * line_h, scale)
 
     if footer:
-        _centered(fb, footer, 178)
+        _centered(fb, footer, _FOOTER_Y)

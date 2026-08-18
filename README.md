@@ -24,9 +24,13 @@ power-on, so there is nothing else to start.
 Press the **POWER key**, **BOOTSEL**, or **tap the screen** — any of the three
 asks the ball. The board has no brightness button; e-paper has no backlight.
 
-You get a ~0.5 s shake through the onboard codec, then the answer. Sound needs a
-speaker on the board's connector; without one everything still works silently.
-The first press after power-on takes ~2 s longer while the codec comes up.
+The shake sound plays *while* the panel refreshes — about 1.6 s end to end.
+Sound needs a speaker on the board's connector; without one everything still
+works silently. The first press after power-on takes ~2 s longer while the codec
+comes up and the clip is generated.
+
+Answers are drawn at the largest size they fit: short ones like "Yes" at 24 px,
+most at 16 px.
 
 A refresh takes a few seconds and flashes the panel black/white. That is normal
 for e-paper, not a fault.

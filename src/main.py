@@ -131,9 +131,11 @@ def main():
             last_answer = answer
             print("->", answer)
 
-            # Shake first, then the answer surfaces -- the order a real 8-ball
-            # works in. Never allowed to raise; a silent ball still works.
-            shaker.play(i2c)
+            # Start the shake and let it run *through* the panel refresh rather
+            # than before it -- the DMA feeds the codec while the CPU drives SPI,
+            # so the sound and the screen changing happen together.
+            # Never allowed to raise; a silent ball still works.
+            shaker.start(i2c)
 
             if epd is None:
                 epd = epaper.EPD_1in54()  # constructor also inits
@@ -143,6 +145,7 @@ def main():
             magic8.render(epd, answer, footer="%.2fV" % battery.volts())
             epd.display(epd.buffer)
             epd.sleep()  # never leave the panel biased
+            shaker.finish()  # audio is long done by here; drops the power amp
 
             inputs.wait_for_release()
 
