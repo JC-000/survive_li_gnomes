@@ -406,6 +406,12 @@ def mfcc_frame(frame, t, work=None):
 
     Raw means before liftering and before mean normalisation, both of which
     need the whole utterance.
+
+    **On return, `work[3]` holds the N_MEL Q8 log2 log-mel values** the DCT was
+    taken of, scale correction included. That is a documented output, not an
+    accident of the implementation: `logmel_q8` reads it, because a CNN wants
+    the filterbank and not the cepstrum. Do not reuse the `mel` array below the
+    log stage without giving `logmel_q8` somewhere else to read from.
     """
     if work is None:
         work = new_work()
@@ -574,6 +580,49 @@ def mfcc_q8(samples, t=None):
         for f in range(n_frames):
             raw[f][j] = raw[f][j] - mean
     return raw
+
+
+def logmel_q8(samples, t=None):
+    """int16 samples -> per-frame N_MEL Q8 log2 log-mel rows.
+
+    The same pipeline as `mfcc_q8` stopped two stages earlier, at the output of
+    the log (speech.md stage 7), before the DCT and before mean normalisation.
+
+    It exists for the trained-classifier experiment. A convolutional net wants
+    the filterbank, whose neighbouring bins are correlated in the way a
+    convolution kernel exploits; the DCT deliberately decorrelates them, which
+    is right for a diagonal distance like DTW's L1 and throws away exactly the
+    structure a kernel is looking for.
+
+    **Nothing new has to be verified on the device for this.** These values are
+    already computed by the existing front end -- both the plain path and the
+    viper port -- on the way to every cepstrum, and are proved bit-exact by the
+    `mel` entry in `src/speech_fixtures.py`. The device side is a tap on an
+    existing array, not a second front end.
+
+    No normalisation is applied. A classifier wants its own -- per-band mean
+    subtraction over the utterance is the log-mel analogue of CMN -- but the
+    choice belongs to whatever consumes this, and the device has to reproduce
+    whichever choice is made, so it is not buried here.
+    """
+    if t is None:
+        t = tables()
+    n_frames = frame_count(len(samples))
+    if n_frames == 0:
+        return []
+
+    pre = preemphasise(samples)
+    work = new_work()
+    mel = work[3]
+    frame = array.array("h", bytes(2 * FRAME_LEN))
+    out = []
+    for f in range(n_frames):
+        base = f * FRAME_STRIDE
+        for n in range(FRAME_LEN):
+            frame[n] = pre[base + n]
+        mfcc_frame(frame, t, work)
+        out.append([mel[i] for i in range(N_MEL)])
+    return out
 
 
 def features_from_q8(q8):
@@ -1227,6 +1276,60 @@ def selftest():
     if worst > 40.0:
         ok = False
         print("  FAIL: fixed-point path disagrees with the float model")
+
+    # The log-mel accessor must be the same numbers the DCT is taken of, or
+    # the trained-classifier experiment is quietly running on a second front
+    # end -- which is exactly what it was written not to do. Checked by
+    # applying the DCT to what `logmel_q8` returns and requiring the raw
+    # cepstra back, exactly.
+    lm = logmel_q8(sig, t)
+    pre_lm = preemphasise(sig)
+    work = new_work()
+    fr = array.array("h", bytes(2 * FRAME_LEN))
+    dct = t.dct
+    bad = 0
+    for f in range(len(lm)):
+        base = f * FRAME_STRIDE
+        for n in range(FRAME_LEN):
+            fr[n] = pre_lm[base + n]
+        ceps = mfcc_frame(fr, t, work)
+        for j in range(N_CEPS):
+            acc = 0
+            row = j * N_MEL
+            for i in range(N_MEL):
+                acc += (lm[f][i] * dct[row + i] + 16384) >> 15
+            if acc != ceps[j]:
+                bad += 1
+    print("logmel_q8 -> DCT reproduces the cepstra: %d frames x %d, %d wrong"
+          % (len(lm), N_CEPS, bad))
+    if bad:
+        ok = False
+        print("  FAIL: the log-mel accessor is not the filterbank the DCT sees")
+
+    # And against the device fixtures, which is the claim that matters: the
+    # `mel` entry in src/speech_fixtures.py is what the viper port must
+    # reproduce bit for bit, so matching it means the trained-classifier
+    # experiment is reading a feature the board already computes -- rather than
+    # a second front end that would have to be verified all over again.
+    try:
+        fixtures = _load_source(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "..", "src", "speech_fixtures.py"), "speech_fixtures")
+    except Exception as exc:              # noqa: BLE001 - reported, not raised
+        print("logmel_q8 vs fixtures: could not load fixtures (%s)" % exc)
+    else:
+        bad_cases = []
+        for name, _why, pcm, expected in fixtures.CASES:
+            pcm_arr = array.array("h")
+            pcm_arr.frombytes(pcm)
+            rows = logmel_q8(pcm_arr, t)
+            if not rows or tuple(rows[0]) != tuple(expected["mel"]):
+                bad_cases.append(name)
+        print("logmel_q8 matches the device fixtures' `mel`: %d of %d cases"
+              % (len(fixtures.CASES) - len(bad_cases), len(fixtures.CASES)))
+        if bad_cases:
+            ok = False
+            print("  FAIL: %s" % ", ".join(bad_cases))
 
     # Round trip through the packed template form.
     blob = pack_template(fx)

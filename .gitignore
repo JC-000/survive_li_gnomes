@@ -9,7 +9,14 @@ firmware/*.uf2
 # Python
 __pycache__/
 *.py[cod]
-.venv/
+# .venv* rather than .venv, because the trained-classifier experiment needs a
+# second one: TinyMaix's converter requires TensorFlow < 2.14, which will not
+# install on Python 3.12+, so .venv-tm is a 3.10 environment alongside it.
+.venv*/
+
+# Trained models and their intermediates -- .keras, .tflite, .tmdl, .json.
+# Reproducible from a corpus and tools/si_train.py, and binary.
+build/
 
 # macOS
 .DS_Store

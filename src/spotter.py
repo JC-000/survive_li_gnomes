@@ -19,18 +19,35 @@ same for DTW distances and the template expansion. Run it after any change.
 Every constant below is pinned against the reference by that test as well; none
 of them is a judgement call made here.
 
-## Written plain, on purpose
+## Written twice: plain, then in viper
 
-No `@micropython.viper` anywhere yet. The reference is integer-only and viper
-should pay well eventually -- but a wrong answer fast is worse than a right
-answer slow, and `tools/speech_probe.py` is what will say whether slow is even a
-problem. The latency budget is the pause after the user lets go of the screen,
+Every stage of the front end and the DTW inner loop exist twice -- a plain
+version, which is the specification and the only one CPython ever sees, and a
+`@micropython.viper` transcription in the `try: import micropython` blocks that
+shadows it on the device. The plain one was measured at **122.9 ms per frame**
+on this board, so a one-second utterance would have spent ~12 s in the front end
+alone. The latency budget is the pause after the user lets go of the screen,
 against a panel that already takes ~583 ms to redraw.
 
-**If this is ported to viper, the bounds stop being free.** CPython and
-MicroPython both use arbitrary-precision ints, so nothing here can wrap; viper's
-`int` is a 32-bit machine word and wraps silently. The proof does not carry over
-by itself.
+Measured on the board, per frame:
+
+    prepare  4.5 ms -> 0.72     fft  80.9 ms -> 3.66     mag  14.0 ms -> 0.77
+    mel      4.0 ms -> 0.30     dct   2.5 ms -> 0.14     whole frame 122.9 -> 6.2
+
+The FFT is 65% of what remains and is at viper's floor for this butterfly:
+13 statements, none of them removable without changing the arithmetic. What is
+left to spend is `BAND` in the matcher, which costs far more than the front end
+does -- see the timings under "What a turn costs" below.
+
+**The bounds stopped being free at that point.** CPython and MicroPython both
+use arbitrary-precision ints, so nothing in the plain version can wrap; viper's
+`int` is a 32-bit machine word and wraps silently, and neither the host test nor
+a plain-path device run can see it happen. The proof does not carry over by
+itself -- what carries it is `src/speech_fixtures.py`, which pins ten stages
+per case, and `tw_stress`, a real frame at 99.8% of the twiddle bound. Run that
+one first. All five cases currently agree with the host at every pinned stage:
+`saturated`, `preemph`, `peak`, `g`, `windowed`, `fft`, `mag`, `mel`,
+`cepstra`, `features`, plus `DTW_0_1` for the matcher.
 
 The tightest stage is the **FFT twiddle**, and it is tighter than it looks:
 
@@ -95,23 +112,33 @@ asserting it, and `--selftest` fails a stage past its proved ceiling:
 
 Run that rather than assuming a port inherits any of it.
 
-## What a turn costs, in operations
+## What a turn costs
 
-Counted rather than timed, because no measured MicroPython benchmark exists for
-this chip -- `tools/speech_probe.py` section (g) is what turns these into
-milliseconds:
+Timed on the board, viper throughout, against a synthetic 66-template set with
+the corpus's own length distribution (28..61 frames, 44 mean):
 
-| | per second of audio |
-| --- | --- |
-| front end | ~13 200 multiply-accumulates per frame, 98 frames, ~1.29 M |
-| one DTW | ~2 058 band cells x 24 coefficients x 3 ops, ~0.15 M |
-| 66 templates | ~9.8 M |
+| query | front end | matching | turn |
+| --- | --- | --- | --- |
+| 44 frames (a typical word) | 273 ms | 616 ms | ~889 ms |
+| 48 frames (0.5 s of audio) | 297 ms | 672 ms | 969 ms |
+| 98 frames (1.0 s of audio) | 603 ms | 562 ms | 1165 ms |
 
-So **matching dominates the front end by about eight to one**, which is worth
-knowing before optimising the FFT. If the probe says a turn is too slow, the
-levers in order are: the duration gate (`DUR_RATIO_PCT` already rejects
-mismatched lengths before the inner loop, and it is free), the band width, then
-viper on the DTW inner loop -- and only then the front end.
+The 98-frame row matches *faster* than the 48-frame one because the duration
+gate rejects 40 of the 66 templates outright, which is the gate doing its job.
+
+**Matching dominates, as the operation counts said it would** -- roughly two to
+one here rather than eight to one, because the front end's FFT is heavier per
+operation than the matcher's L1 loop. The remaining levers, in order:
+
+- **`BAND`.** Measured, 66 templates against a 50-frame query:
+  **band 20 = 1146 ms, band 10 = 696 ms, band 5 = 409 ms** -- very nearly linear
+  in `2*BAND + 1`, as the shape predicts. The host corpus scored 5, 10 and 20
+  identically, so halving it looks free, but that corpus is saturated and the
+  claim wants re-measuring against templates enrolled through this board before
+  the 287 ms is banked. It is a one-line change when somebody has that evidence.
+- **The duration gate**, already in place and already free.
+- The DTW inner loop is unrolled four ways and is otherwise at viper's floor;
+  the front end is 20x down from where it started. Neither has much left.
 """
 
 from array import array
@@ -336,21 +363,27 @@ def new_work():
             array("i", bytes(4 * FFT_SIZE)),   # im
             array("i", bytes(4 * N_BINS)),     # mag
             array("i", bytes(4 * N_MEL)),      # mel
-            array("h", bytes(2 * FRAME_LEN)))  # frame
+            array("h", bytes(2 * FRAME_LEN)),  # frame
+            array("i", bytes(4 * N_CEPS)))     # cepstra
 
 
-def mfcc_frame(frame, work, out):
-    """One 400-sample frame of pre-emphasised int16 -> 12 raw cepstra, Q8 log2.
+# The front end is split into one function per stage of docs/speech.md rather
+# than written as one long body, because that is the seam the viper port
+# replaces along: each stage is overridden on its own and `speech_fixtures`
+# pins each one, so a mismatch names the stage. The stages are otherwise
+# unchanged, and the plain versions here stay the specification.
 
-    Raw meaning before liftering and before mean normalisation, both of which
-    need the whole utterance.
+def _prepare(src, base, re, im):
+    """Stages 2-3: window, block-float shift, bit-reverse. Returns `g`.
+
+    Reads FRAME_LEN samples from `src` starting at `base` rather than taking a
+    frame that has already been copied out. The copy was 400 assignments per
+    frame for nothing -- the stride is a plain offset and every consumer of a
+    frame is this function.
     """
-    re, im, mag, mel = work[0], work[1], work[2], work[3]
-
-    # Window, finding the block-floating-point peak in the same pass.
     peak = 0
     for n in range(FRAME_LEN):
-        v = (frame[n] * WINDOW[n] + 16384) >> 15
+        v = (src[base + n] * WINDOW[n] + 16384) >> 15
         re[n] = v
         a = v if v >= 0 else -v
         if a > peak:
@@ -376,11 +409,13 @@ def mfcc_frame(frame, work, out):
         b = BITREV[n]
         if b > n:
             re[n], re[b] = re[b], re[n]
-    _fft512(re, im)
+    return g
 
-    # Magnitude, not power: power would need 15 bits of headroom the mel
-    # accumulator does not have, and magnitude only halves the log, which is a
-    # constant factor DTW never sees.
+
+def _magnitudes(re, im, mag):
+    """Stage 5. Magnitude, not power: power would need 15 bits of headroom the
+    mel accumulator does not have, and magnitude only halves the log, which is a
+    constant factor DTW never sees."""
     for k in range(N_BINS):
         r = re[k]
         i2 = im[k]
@@ -390,6 +425,9 @@ def mfcc_frame(frame, work, out):
             m += 1          # a quiet bin and it does not cancel
         mag[k] = m
 
+
+def _melbank(mag, mel, g):
+    """Stages 6-7: filterbank, optional floor, Q8 log2 with the `g` correction."""
     ofs = 0
     top = 0
     for i in range(N_MEL):
@@ -415,15 +453,68 @@ def mfcc_frame(frame, work, out):
         # magnitude and frames of different loudness stay comparable.
         mel[i] = _log2_q8(mel[i]) + ((2 - g) << LOG_Q)
 
-    # DCT-II. Shifting each term rather than the sum keeps the accumulator
-    # inside int32, at a cost under a thousandth of a Q8 LSB.
+
+def _dct(mel, out):
+    """Stage 8. Shifting each term rather than the sum keeps the accumulator
+    inside int32, at a cost under a thousandth of a Q8 LSB."""
     for j in range(N_CEPS):
         row = j * N_MEL
         acc = 0
         for i in range(N_MEL):
             acc += (mel[i] * DCT[row + i] + 16384) >> 15
         out[j] = acc
+
+
+def _mfcc_at(src, base, work, out):
+    """FRAME_LEN pre-emphasised int16 at `src[base:]` -> 12 raw cepstra.
+
+    `out` must be an array("i"); `mfcc_frame` is the wrapper that accepts a
+    plain list. Raw meaning before liftering and before mean normalisation,
+    both of which need the whole utterance.
+    """
+    re, im, mag, mel = work[0], work[1], work[2], work[3]
+    g = _prepare(src, base, re, im)
+    _fft512(re, im)
+    _magnitudes(re, im, mag)
+    _melbank(mag, mel, g)
+    _dct(mel, out)
     return out
+
+
+def mfcc_frame(frame, work, out):
+    """One 400-sample frame of pre-emphasised int16 -> 12 raw cepstra, Q8 log2.
+
+    `out` may be any indexable of length N_CEPS, including a plain list, which
+    is what `tools/test_spotter.py` passes; the arithmetic happens in
+    `work[5]` because the viper DCT writes through a ptr32.
+    """
+    ceps = work[5]
+    _mfcc_at(frame, 0, work, ceps)
+    for j in range(N_CEPS):
+        out[j] = ceps[j]
+    return out
+
+
+def _lifter_row(ceps, q8, off):
+    """Stage 9, folded in per frame rather than as a second pass over the rows."""
+    for j in range(N_CEPS):
+        q8[off + j] = (ceps[j] * LIFTER[j] + 2048) >> 12
+
+
+def _cmn(q8, n_frames):
+    """Stage 10, in place. Truncating toward zero, not flooring, because that is
+    what a hardware divide gives and the device has no cheap floor-divide -- and
+    because the host does the same, which is the only reason that matters."""
+    for j in range(N_CEPS):
+        total = 0
+        for f in range(n_frames):
+            total += q8[f * N_CEPS + j]
+        if total >= 0:
+            mean = total // n_frames
+        else:
+            mean = -((-total) // n_frames)
+        for f in range(n_frames):
+            q8[f * N_CEPS + j] -= mean
 
 
 def mfcc_q8(samples, start, count, work=None):
@@ -437,52 +528,21 @@ def mfcc_q8(samples, start, count, work=None):
         return None, 0
     if work is None:
         work = new_work()
-    frame = work[4]
+    ceps = work[5]
 
     pre = array("h", bytes(2 * count))
     preemphasise(samples, start, count, pre)
 
     q8 = array("i", bytes(4 * N_CEPS * n_frames))
-    row = [0] * N_CEPS
     for f in range(n_frames):
-        base = f * FRAME_STRIDE
-        for n in range(FRAME_LEN):
-            frame[n] = pre[base + n]
-        mfcc_frame(frame, work, row)
-        # Liftering, folded in here rather than in a second pass over the rows.
-        off = f * N_CEPS
-        for j in range(N_CEPS):
-            q8[off + j] = (row[j] * LIFTER[j] + 2048) >> 12
-
-    # Per-utterance cepstral mean normalisation. Truncating toward zero, not
-    # flooring, because that is what a hardware divide gives and the device has
-    # no cheap floor-divide -- and because the host does the same, which is the
-    # only reason that matters.
-    for j in range(N_CEPS):
-        total = 0
-        for f in range(n_frames):
-            total += q8[f * N_CEPS + j]
-        if total >= 0:
-            mean = total // n_frames
-        else:
-            mean = -((-total) // n_frames)
-        for f in range(n_frames):
-            q8[f * N_CEPS + j] -= mean
+        _mfcc_at(pre, f * FRAME_STRIDE, work, ceps)
+        _lifter_row(ceps, q8, f * N_CEPS)
+    _cmn(q8, n_frames)
     return q8, n_frames
 
 
-def features(samples, start, count, work=None):
-    """int16 samples -> (biased uint16 feature rows, n_frames).
-
-    The rows come back biased by +32768 in an array("H"), which is the form the
-    DTW inner loop wants: templates are stored the same way and the bias
-    cancels in the difference, so neither side needs sign extension.
-    """
-    q8, n_frames = mfcc_q8(samples, start, count, work)
-    if not n_frames:
-        return None, 0
-
-    out = array("H", bytes(2 * N_FEAT * n_frames))
+def _feature_rows(q8, out, n_frames):
+    """Stages 10-11: Q8 statics -> the biased uint16 rows DTW reads."""
     shift = FEAT_SHIFT - DELTA_SHIFT
     half = 1 << (FEAT_SHIFT - 1)
     dhalf = 1 << (shift - 1)
@@ -516,8 +576,386 @@ def features(samples, start, count, work=None):
             elif v > 65535:
                 v = 65535
             out[dst + N_CEPS + j] = v
+
+
+def features(samples, start, count, work=None):
+    """int16 samples -> (biased uint16 feature rows, n_frames).
+
+    The rows come back biased by +32768 in an array("H"), which is the form the
+    DTW inner loop wants: templates are stored the same way and the bias
+    cancels in the difference, so neither side needs sign extension.
+    """
+    q8, n_frames = mfcc_q8(samples, start, count, work)
+    if not n_frames:
+        return None, 0
+
+    out = array("H", bytes(2 * N_FEAT * n_frames))
+    _feature_rows(q8, out, n_frames)
     return out, n_frames
 
+
+# --- The same front end again, in viper ------------------------------------
+#
+# Speed only. Every expression below is the same expression as the portable
+# stage it replaces, in the same order, and the portable version above stays
+# the specification -- this is a transcription, not a second implementation.
+# `src/speech_fixtures.py` is what holds the two together: it pins the pipeline
+# stage by stage, so a wrong transcription names the stage it broke instead of
+# only disagreeing at the output.
+#
+# **The overflow proof in docs/speech.md stops being free here.** CPython and
+# MicroPython both use unbounded ints, so neither the host test nor an
+# unported device run can see a value that would wrap; viper's `int` is a
+# 32-bit machine word and wraps silently. Two things the proof rests on, both
+# preserved literally below:
+#
+#   - one unconditional right shift per FFT stage, which is what keeps
+#     |X| <= 32767 and so the twiddle product inside 50.00% of int32;
+#   - `wr*lr - wi*li` in that order, because a reordering can make a partial
+#     sum exceed the bounded final value.
+#
+# `speech_fixtures.tw_stress` is a real frame sitting at 99.8% of that bound
+# and it is the case to run first -- the deliberately hostile full-scale input
+# is *milder*, because pre-emphasis saturation clamps it before the FFT.
+#
+# Three viper details, each silent when wrong (all probed on this build,
+# MicroPython 1.28.0 / armv7emsp, not assumed):
+#
+#   - a ptr16 load is zero-extended, so int16 input needs the explicit
+#     `- 65536`; a ptr32 load is a whole machine word, and `int()` is what
+#     types it signed, so every load is wrapped in it;
+#   - `>>` on a signed viper int is arithmetic and floors, matching CPython on
+#     negatives, and `//` is available and does the same;
+#   - `ptr32(GLOBAL)` inside a viper function casts a module-level array("i"),
+#     which is what keeps the frozen tables out of the argument list.
+#
+# Only ImportError is caught, so this falls back to the portable path on the
+# host and nowhere else. A viper compile error on the device is meant to be
+# loud: silently running at 120 ms a frame is the failure this port exists to
+# remove.
+
+try:  # pragma: no cover -- device only
+    import micropython
+
+    @micropython.viper
+    def _v_preemph(samples: ptr16, start: int, count: int, out: ptr16):
+        if count <= 0:
+            return
+        pe = int(PREEMPH_Q15)
+        prev = int(samples[start])
+        if prev > 32767:
+            prev = prev - 65536
+        i = 0
+        while i < count:
+            x = int(samples[start + i])
+            if x > 32767:
+                x = x - 65536
+            y = x - ((pe * prev) >> 15)
+            prev = x
+            if y > 32767:
+                y = 32767
+            elif y < -32768:
+                y = -32768
+            out[i] = y
+            i += 1
+
+    @micropython.viper
+    def _v_prepare(src: ptr16, base: int, re: ptr32, im: ptr32) -> int:
+        wnd = ptr32(WINDOW)
+        brv = ptr32(BITREV)
+        flen = int(FRAME_LEN)
+        fsz = int(FFT_SIZE)
+        peak = 0
+        n = 0
+        while n < flen:
+            x = int(src[base + n])
+            if x > 32767:
+                x = x - 65536
+            v = (x * int(wnd[n]) + 16384) >> 15
+            re[n] = v
+            if v < 0:
+                v = 0 - v
+            if v > peak:
+                peak = v
+            n += 1
+        while n < fsz:
+            re[n] = 0
+            n += 1
+        n = 0
+        while n < fsz:
+            im[n] = 0
+            n += 1
+
+        g = 0
+        if peak != 0:
+            b = 0
+            t = peak
+            while t != 0:
+                t >>= 1
+                b += 1
+            g = 14 - (b - 1)
+            if g < 0:
+                g = 0
+        if g != 0:
+            n = 0
+            while n < flen:
+                re[n] = int(re[n]) << g
+                n += 1
+
+        n = 0
+        while n < fsz:
+            b = int(brv[n])
+            if b > n:
+                t = int(re[n])
+                re[n] = int(re[b])
+                re[b] = t
+            n += 1
+        return g
+
+    @micropython.viper
+    def _v_fft512(re: ptr32, im: ptr32):
+        twr = ptr32(TW_RE)
+        twi = ptr32(TW_IM)
+        n = int(FFT_SIZE)
+        size = 2
+        while size <= n:
+            half = size >> 1
+            step = n // size
+            i = 0
+            while i < n:
+                k = 0
+                j = i
+                end = i + half
+                while j < end:
+                    l = j + half
+                    wr = int(twr[k])
+                    wi = int(twi[k])
+                    lr = int(re[l])
+                    li = int(im[l])
+                    tr = (wr * lr - wi * li + 16384) >> 15
+                    ti = (wr * li + wi * lr + 16384) >> 15
+                    jr = int(re[j])
+                    ji = int(im[j])
+                    re[l] = (jr - tr + 1) >> 1
+                    im[l] = (ji - ti + 1) >> 1
+                    re[j] = (jr + tr + 1) >> 1
+                    im[j] = (ji + ti + 1) >> 1
+                    k += step
+                    j += 1
+                i += size
+            size <<= 1
+
+    @micropython.viper
+    def _v_magnitudes(re: ptr32, im: ptr32, mag: ptr32):
+        # Restoring binary square root rather than the portable Newton loop:
+        # exact floor either way, but no divide, which viper has no cheap form
+        # of. `rem` ends as p - res*res, so the round-to-nearest test that the
+        # portable version writes as `p - m*m > m` is `rem > res` here.
+        nb = int(N_BINS)
+        # 2**30 is one past MicroPython's small-int range, so written as a
+        # literal inside the loop viper takes it for an object and refuses the
+        # comparison. int() once, outside, is the whole fix.
+        hibit = int(1 << 30)
+        k = 0
+        while k < nb:
+            r = int(re[k])
+            i2 = int(im[k])
+            p = r * r + i2 * i2
+            rem = p
+            res = 0
+            bit = hibit
+            while bit > rem:
+                bit >>= 2
+            while bit != 0:
+                t = res + bit
+                if rem >= t:
+                    rem -= t
+                    res = (res >> 1) + bit
+                else:
+                    res >>= 1
+                bit >>= 2
+            if rem > res:
+                res += 1
+            mag[k] = res
+            k += 1
+
+    @micropython.viper
+    def _v_melbank(mag: ptr32, mel: ptr32, g: int):
+        ms = ptr32(MEL_START)
+        ml = ptr32(MEL_LEN)
+        mw = ptr32(MEL_W)
+        lg = ptr32(LOG2)
+        nmel = int(N_MEL)
+        logq = int(LOG_Q)
+        ofs = 0
+        top = 0
+        i = 0
+        while i < nmel:
+            s = int(ms[i])
+            ln = int(ml[i])
+            acc = 0
+            k = 0
+            while k < ln:
+                acc += (int(mag[s + k]) * int(mw[ofs + k]) + 128) >> 8
+                k += 1
+            ofs += ln
+            mel[i] = acc
+            if acc > top:
+                top = acc
+            i += 1
+
+        fsh = int(MEL_FLOOR_SHIFT)
+        if fsh != 0:
+            fl = top >> fsh
+            i = 0
+            while i < nmel:
+                if int(mel[i]) < fl:
+                    mel[i] = fl
+                i += 1
+
+        # (2 - g) << LOG_Q, written as a multiply because g can exceed 2 and
+        # shifting a negative left is not something to rely on.
+        corr = (2 - g) * (1 << logq)
+        i = 0
+        while i < nmel:
+            v = int(mel[i])
+            if v < 1:
+                v = 1
+            e = 0
+            t = v
+            while t != 0:
+                t >>= 1
+                e += 1
+            e -= 1
+            if e >= 16:
+                m = v >> (e - 16)
+            else:
+                m = v << (16 - e)
+            idx = (m >> 10) - 64
+            frac = m & 1023
+            lo = int(lg[idx])
+            hi = int(lg[idx + 1])
+            mel[i] = (e << logq) + lo + (((hi - lo) * frac + 512) >> 10) + corr
+            i += 1
+
+    @micropython.viper
+    def _v_dct(mel: ptr32, out: ptr32):
+        dct = ptr32(DCT)
+        nmel = int(N_MEL)
+        nceps = int(N_CEPS)
+        j = 0
+        while j < nceps:
+            row = j * nmel
+            acc = 0
+            i = 0
+            while i < nmel:
+                acc += (int(mel[i]) * int(dct[row + i]) + 16384) >> 15
+                i += 1
+            out[j] = acc
+            j += 1
+
+    @micropython.viper
+    def _v_lifter_row(ceps: ptr32, q8: ptr32, off: int):
+        lf = ptr32(LIFTER)
+        nceps = int(N_CEPS)
+        j = 0
+        while j < nceps:
+            q8[off + j] = (int(ceps[j]) * int(lf[j]) + 2048) >> 12
+            j += 1
+
+    @micropython.viper
+    def _v_cmn(q8: ptr32, n_frames: int):
+        nceps = int(N_CEPS)
+        j = 0
+        while j < nceps:
+            total = 0
+            f = 0
+            while f < n_frames:
+                total += int(q8[f * nceps + j])
+                f += 1
+            # Toward zero, as the portable version and the host both do.
+            if total >= 0:
+                mean = total // n_frames
+            else:
+                mean = 0 - ((0 - total) // n_frames)
+            f = 0
+            while f < n_frames:
+                q8[f * nceps + j] = int(q8[f * nceps + j]) - mean
+                f += 1
+            j += 1
+
+    @micropython.viper
+    def _v_feature_rows(q8: ptr32, out: ptr16, n_frames: int):
+        nceps = int(N_CEPS)
+        nfeat = int(N_FEAT)
+        bias = int(BIAS)
+        fshift = int(FEAT_SHIFT)
+        dwidth = int(DELTA_WIDTH)
+        dq15 = int(DELTA_Q15)
+        shift = fshift - int(DELTA_SHIFT)
+        half = 1 << (fshift - 1)
+        dhalf = 1 << (shift - 1)
+        last = n_frames - 1
+        f = 0
+        while f < n_frames:
+            src = f * nceps
+            dst = f * nfeat
+            j = 0
+            while j < nceps:
+                out[dst + j] = ((int(q8[src + j]) + half) >> fshift) + bias
+                j += 1
+            if dwidth != 0:
+                j = 0
+                while j < nceps:
+                    acc = 0
+                    dn = 1
+                    while dn <= dwidth:
+                        a = f + dn
+                        b = f - dn
+                        if a > last:
+                            a = last
+                        if b < 0:
+                            b = 0
+                        acc += dn * (int(q8[a * nceps + j]) - int(q8[b * nceps + j]))
+                        dn += 1
+                    v = (acc * dq15 + 16384) >> 15
+                    v = ((v + dhalf) >> shift) + bias
+                    if v < 0:
+                        v = 0
+                    elif v > 65535:
+                        v = 65535
+                    out[dst + nceps + j] = v
+                    j += 1
+            f += 1
+
+    # Bound to the portable names rather than wrapped in one. A wrapper is a
+    # Python frame per call and the front end makes six of them per frame; at
+    # ~0.6 ms a frame that was 10% of the front end, for nothing. Both names
+    # stay live on purpose -- `_prepare` is whichever implementation is in use,
+    # `_v_prepare` is always the viper one and the portable body is still up
+    # there under its own name, so a device-side run can compare the two
+    # directly rather than only against the fixtures.
+    def preemphasise(samples, start, count, out):  # noqa: F811
+        """See the portable version above, which is the specification.
+
+        The one stage that keeps its wrapper: it is public and documented as
+        returning `out`, a viper function returns None, and it runs once per
+        utterance rather than once per frame.
+        """
+        _v_preemph(samples, start, count, out)
+        return out
+
+    _prepare = _v_prepare
+    _fft512 = _v_fft512
+    _magnitudes = _v_magnitudes
+    _melbank = _v_melbank
+    _dct = _v_dct
+    _lifter_row = _v_lifter_row
+    _cmn = _v_cmn
+    _feature_rows = _v_feature_rows
+
+except ImportError:
+    pass
 
 # --- Template expansion ----------------------------------------------------
 
@@ -682,6 +1120,137 @@ def dtw(query, n, buf, frame_off, m, band=BAND):
     return total // (n + m)
 
 
+try:  # pragma: no cover -- device only
+    import micropython
+
+    @micropython.viper
+    def _v_dtw(query: ptr16, buf: ptr16, rows: ptr32,
+               n: int, m: int, band: int, frame_off: int) -> int:
+        """The portable `dtw` body, transcribed. Same recurrence, same order.
+
+        `rows` is one array holding both cost rows end to end -- viper cannot
+        swap two array objects, so the two halves are swapped by their offsets
+        `p0` and `p1` instead. It must be at least 2*m long; `bind()` sizes it
+        from the longest template.
+
+        `query` and `buf` are both read as unsigned 16-bit, which is what the
+        +32768 bias is for: the bias cancels in the difference and neither side
+        needs sign extension. Indices are in uint16 units, so the byte offsets
+        of the portable version lose their factors of two.
+        """
+        nfeat = int(N_FEAT)
+        inf = int(INF)
+        p0 = 0
+        p1 = m
+        j = 0
+        while j < m:
+            rows[j] = inf
+            j += 1
+
+        base = nfeat * frame_off
+        i = 0
+        while i < n:
+            c = (i * m) // n
+            lo = c - band
+            hi = c + band
+            if lo < 0:
+                lo = 0
+            if hi > m - 1:
+                hi = m - 1
+            qi = i * nfeat
+            j = 0
+            while j < m:
+                rows[p1 + j] = inf
+                j += 1
+            j = lo
+            while j <= hi:
+                p = base + nfeat * j
+                d = 0
+                k = 0
+                # Unrolled four ways, with a tail for an N_FEAT that is not a
+                # multiple of four. Measured on this build: 9.56 -> 7.53 us per
+                # band cell, 21%. viper spills every local to the stack, so what
+                # the unrolling buys is fewer loop-variable statements, not
+                # fewer loads -- which is also why `if/else` beats a branchless
+                # abs here and why walking two indices is *slower* than
+                # recomputing `qi + k`. All three were measured, not assumed.
+                stop = nfeat & -4
+                while k < stop:
+                    v = int(query[qi + k]) - int(buf[p + k])
+                    if v < 0:
+                        d -= v
+                    else:
+                        d += v
+                    v = int(query[qi + k + 1]) - int(buf[p + k + 1])
+                    if v < 0:
+                        d -= v
+                    else:
+                        d += v
+                    v = int(query[qi + k + 2]) - int(buf[p + k + 2])
+                    if v < 0:
+                        d -= v
+                    else:
+                        d += v
+                    v = int(query[qi + k + 3]) - int(buf[p + k + 3])
+                    if v < 0:
+                        d -= v
+                    else:
+                        d += v
+                    k += 4
+                while k < nfeat:
+                    v = int(query[qi + k]) - int(buf[p + k])
+                    if v < 0:
+                        d -= v
+                    else:
+                        d += v
+                    k += 1
+                if i == 0 and j == 0:
+                    best = 2 * d
+                else:
+                    best = inf
+                    if i > 0:
+                        a = int(rows[p0 + j]) + d          # (1,0)
+                        if a < best:
+                            best = a
+                        if j > 0:
+                            a = int(rows[p0 + j - 1]) + 2 * d   # (1,1)
+                            if a < best:
+                                best = a
+                    if j > 0:
+                        a = int(rows[p1 + j - 1]) + d      # (0,1)
+                        if a < best:
+                            best = a
+                rows[p1 + j] = best
+                j += 1
+            t = p0
+            p0 = p1
+            p1 = t
+            i += 1
+
+        total = int(rows[p0 + m - 1])
+        if total >= inf:
+            return inf
+        return total // (n + m)
+
+    def dtw(query, n, buf, frame_off, m, band=BAND):  # noqa: F811
+        """See the portable version above, which is the specification.
+
+        The two early rejections stay out here rather than in the kernel: a
+        template rejected on duration never pays a viper call, and the
+        duration gate is what rejects most of them.
+        """
+        if n == 0 or m == 0:
+            return INF
+        if n * 100 > m * DUR_RATIO_PCT or m * 100 > n * DUR_RATIO_PCT:
+            return INF
+        rows = _rows
+        if rows is None or len(rows) < 2 * m:
+            rows = array("i", bytes(8 * m))
+        return _v_dtw(query, buf, rows, n, m, band, frame_off)
+
+except ImportError:
+    pass
+
 # --- The spotter itself ----------------------------------------------------
 
 _buf = None       # the template buffer; owned by the caller, not by this module
@@ -689,6 +1258,7 @@ _index = None     # (label, frame_offset, n_frames) per template
 _work = None      # front-end scratch, allocated on first use
 _prev = None      # DTW cost rows, sized to the longest template by bind()
 _cur = None
+_rows = None      # the viper matcher's two rows, in one array; see _v_dtw
 
 
 def bind(buf, index):
@@ -703,15 +1273,19 @@ def bind(buf, index):
     its name, this one keeps the memory alive but nothing else does, and the
     intent of the ownership becomes impossible to read.
     """
-    global _buf, _index, _prev, _cur
+    global _buf, _index, _prev, _cur, _rows
     _buf = buf
     _index = index
     longest = 0
     for entry in index:
         if entry[2] > longest:
             longest = entry[2]
+    # Both shapes, because whichever `dtw` is bound wants its own: the portable
+    # one swaps two array objects, the viper one swaps two offsets into a
+    # single array. Half a kilobyte between them, against 137 KB of templates.
     _prev = array("i", bytes(4 * longest))
     _cur = array("i", bytes(4 * longest))
+    _rows = array("i", bytes(8 * longest))
 
 
 def ready():

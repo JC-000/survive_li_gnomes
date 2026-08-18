@@ -1058,17 +1058,72 @@ it. Enrol on the board.
 
 ## Cost on the device
 
-Rough, from the host measurement of 1.3 ms per frame in CPython and the
-operation counts; **not measured on hardware**, and `tools/speech_probe.py`
-exists to replace this with real numbers.
+**Measured**, on the RP2350 at MicroPython 1.28.0, native arch `armv7emsp`.
+`src/spotter.py` carries the front end twice: a plain version, which is the
+specification, and a `@micropython.viper` transcription that shadows it on the
+device. Per frame:
 
-Per frame: ~400 window multiplies, 2304 butterflies, 257 magnitudes, 456
-weighted mel adds, 26 logs, 312 DCT multiply-adds — roughly 42k integer
-operations. A 500 ms endpointed word is ~50 frames.
+| stage | plain | viper | |
+| --- | --- | --- | --- |
+| window, block-float, bit-reverse | 4.50 ms | **0.72 ms** | |
+| FFT | 80.9 ms | **3.66 ms** | 22x, and 65% of what remains |
+| magnitude | 14.0 ms | **0.77 ms** | restoring sqrt, no divide |
+| mel filterbank + log | 4.03 ms | **0.30 ms** | |
+| DCT | 2.46 ms | **0.14 ms** | |
+| **whole frame** | **122.9 ms** | **6.2 ms** | 20x |
 
-DTW: 50 query frames x 21 band cells x 12 coefficients = 12600 absolute
-differences per template, x 72 templates = ~900k operations, less whatever the
-duration prefilter rejects first.
+Pre-emphasis runs at 0.598 us/sample, 9.6 ms for a second of audio. The
+per-utterance tail — CMN and the delta/pack pass — is 0.73 ms and 3.20 ms over
+98 frames.
+
+A turn, against a 66-template set with the corpus's length distribution:
+
+| query | front end | matching | turn |
+| --- | --- | --- | --- |
+| 44 frames (a typical word) | 273 ms | 616 ms | ~889 ms |
+| 48 frames (0.5 s of audio) | 297 ms | 672 ms | 969 ms |
+| 98 frames (1.0 s of audio) | 603 ms | 562 ms | 1165 ms |
+
+The 98-frame row matches faster than the 48-frame one because the duration gate
+rejects 40 of the 66 templates before the inner loop — the gate doing its job.
+
+**Matching dominates, about two to one** rather than the eight to one the
+operation counts suggested: the front end's FFT is heavier per operation than
+the matcher's L1 loop, so counting operations under-priced it. `BAND` is
+therefore the lever that is left, and it is very nearly linear in `2*BAND + 1`:
+
+| band | 66 templates, 50-frame query |
+| --- | --- |
+| 20 | 1146 ms |
+| **10** (current) | **696 ms** |
+| 5 | 409 ms |
+
+The corpus scored 5, 10 and 20 identically, so halving it looks free — but that
+corpus is saturated (see the variants table above) and the claim wants
+re-measuring against templates enrolled through this board before the 287 ms is
+banked.
+
+### What the viper port cost to get right
+
+Three things about viper that are silent when wrong, all probed on this build
+rather than assumed:
+
+- a `ptr16` load is zero-extended, so int16 input needs an explicit `- 65536`;
+  a `ptr32` load is a whole machine word and `int()` is what types it *signed*,
+  which is why every load in the port is wrapped in it;
+- `2**30` is one past MicroPython's small-int range, so a bare `1 << 30`
+  literal inside a viper function is an *object* and the comparison against it
+  fails to compile. `int()` once, outside the loop, is the fix;
+- viper spills every local to the stack, so statement count is the thing that
+  costs, not loads. Measured on the DTW inner loop: unrolling four ways with
+  `if/else` took a band cell from 9.56 to 7.53 us (21%), while a branchless
+  `abs` was *slower* (10.68) and walking two indices instead of recomputing
+  `qi + k` was slower still (10.84).
+
+Only `ImportError` is caught around the viper blocks, so they fall back to the
+plain path on the host and nowhere else. A compile error on the device is meant
+to be loud: silently running at 122.9 ms a frame is the failure the port exists
+to remove.
 
 ## Proving the device port is bit-exact
 
