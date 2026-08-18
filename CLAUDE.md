@@ -15,6 +15,24 @@ duplicate what the display already does for free.
 
 Deploy with `./tools/deploy.sh`; `main.py` autoruns at power-on.
 
+## What that rule does not forbid
+
+It is about *runtime* writes. The risk is a power cut interrupting a write on a
+device that loses power without warning, so what it forbids is the running
+program persisting state — and nothing else.
+
+Deploy-time writes are fine. `./tools/deploy.sh` writes every module to flash
+over USB on an attended, externally powered board, and that is the same
+operation whether the file carries code or a table of recorded templates.
+Streaming a capture out over USB CDC from a RAM buffer writes nothing at all.
+
+Worth stating because the stricter reading is easy to arrive at: taken as "the
+board may never record anything", it pushes speech work toward templates
+recorded on the Mac, and a recogniser enrolled on one microphone but run through
+another is a channel mismatch that cepstral mean normalisation does not rescue
+at single-word lengths. Enrol through the board — `tools/enrol.py` streams from
+RAM — and ship the templates as a deployed module like any other.
+
 ## Verifying display and audio changes
 
 `display()` completes normally against an **unpowered** panel — SPI writes land
