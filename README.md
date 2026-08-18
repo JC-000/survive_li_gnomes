@@ -24,7 +24,10 @@ power-on, so there is nothing else to start.
 Press the **POWER key**, **BOOTSEL**, or **tap the screen** — any of the three
 asks the ball. The board has no brightness button; e-paper has no backlight.
 
-The shake sound plays *while* the panel refreshes — about 1.6 s end to end.
+The shake sound plays *while* the panel refreshes — about 0.6 s end to end for
+a normal press. Every ninth press does a slower full refresh that flashes the
+panel, to scrub the ghosting partial refreshes leave behind; so does the first
+press after the panel has been idle a minute.
 Sound needs a speaker on the board's connector; without one everything still
 works silently. The first press after power-on takes ~2 s longer while the codec
 comes up and the clip is generated.
@@ -39,8 +42,8 @@ once every five presses, averaging about one in eight. Tune it via
 To change a sampled clip, edit `tools/build_clips.sh`, run it, then
 `./tools/deploy.sh`. If a clip sounds overdriven, lower its `--peak`.
 
-A refresh takes a few seconds and flashes the panel black/white. That is normal
-for e-paper, not a fault.
+The occasional flashing black/white refresh is normal for e-paper, not a fault —
+it is what clears ghosting.
 
 ## Behaviour under power loss
 

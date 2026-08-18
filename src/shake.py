@@ -214,8 +214,9 @@ class Shaker:
     def finish(self):
         """Wait out any remaining audio, then drop the power amp.
 
-        Usually a no-op for the shake (0.54 s against a ~1.4 s refresh), but the
-        laugh is 1.5 s and will still be running, so this genuinely waits.
+        Roughly a wash for the shake (0.54 s against a ~600 ms partial refresh),
+        but the laugh is 1.5 s and will still be running, so this genuinely waits
+        -- a press that draws the laugh takes about as long as the laugh.
         """
         try:
             if self._audio is not None:

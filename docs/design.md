@@ -11,7 +11,7 @@ screen survives a power cut for free, and there is nothing to persist.
 Three consequences:
 
 1. **Boot never touches the panel.** The last answer is already on screen;
-   redrawing it would cost a ~4 s flashing full refresh to produce a byte-identical
+   redrawing it would cost a flashing full refresh to produce a byte-identical
    image. `main.py` initialises the panel lazily, on the first press.
 2. **Nothing is ever written to flash.** There is no state worth saving, and a
    flash write interrupted by a power cut is the one thing that could corrupt the
@@ -42,6 +42,41 @@ Answer length is a design constraint, not free text: `fit()` drops to a smaller
 size as an answer gets longer, so short answers are also the ones that look best.
 Of the 44, 11 render at 3× and 33 at 2×; none need the 1× fallback. The longest,
 "The void declines to comment", is three lines at 2×.
+
+## Partial refresh
+
+A full refresh takes ~1.7 s and flashes the whole panel black and white. A
+partial refresh takes ~0.6 s and doesn't flash. Measured:
+
+| | BUSY | wall |
+| --- | --- | --- |
+| full | 1397 ms | 1715 ms |
+| partial | 583 ms | 612 ms |
+
+`Panel` in `main.py` owns the policy. The sequence that works, taken from
+Waveshare's own demo, is `displayPartBaseImage` (writes both RAM buffers, full
+refresh) → `init(PART_UPDATE)` → many `displayPartial` calls.
+
+Three constraints shape the policy:
+
+1. **Ghosting accumulates.** Partial refreshes leave residue, so every
+   `PARTIALS_BEFORE_FULL` (8) updates one full refresh scrubs it. Lower that
+   number for a cleaner panel at the cost of flashing more often.
+2. **The base image must survive between presses.** Partial refresh diffs against
+   what the controller holds in RAM, and deep sleep can only be left via a
+   hardware reset, which drops it. So the panel stays powered between presses
+   rather than sleeping after each one.
+3. **But not forever.** After `PANEL_IDLE_SLEEP_MS` (60 s) idle the panel deep
+   sleeps; the next press pays for a full refresh, which conveniently also
+   scrubs ghosting.
+
+Before writing a base image the full waveform is reloaded with
+`init(FULL_UPDATE)` — after a run of partials the partial LUT is loaded, and it
+will not scrub ghosting.
+
+`init(PART_UPDATE)` performs a hardware reset and the base image still survives
+it, so the SSD1681 retains RAM across reset even though registers are cleared.
+That is worth knowing before trying to "fix" the apparent ordering problem.
 
 ## Randomness
 
@@ -99,7 +134,7 @@ forced sound and screen to happen strictly one after the other — 0.54 s of noi
 then a silent refresh. `dma_play_words_async` triggers the transfer and returns:
 the DMA engine feeds the codec while the CPU drives SPI, so `shaker.start()`
 before the refresh and `shaker.finish()` after it overlaps the two. Press time
-dropped from ~3.1 s to ~1.6 s as a side effect.
+dropped as a side effect.
 
 ### Alternate sounds
 

@@ -164,7 +164,7 @@ def _text_scaled(fb, text, x, y, colour, scale):
     framebuf has no scaled blit and the built-in font is fixed at 8x8, so the
     glyphs are rendered into a scratch mono buffer and each set pixel is painted
     as a scale x scale block. Costs a few tens of ms for a screen of text, which
-    is nothing against a ~2.6 s panel refresh.
+    is nothing against a panel refresh (~600 ms partial, ~1.7 s full).
     """
     if scale == 1:
         fb.text(text, x, y, colour)

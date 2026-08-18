@@ -363,7 +363,7 @@ class AudioPIO:
     # self.dma_tx.active(): pass`, so the CPU sits idle for the whole clip and
     # the e-paper refresh can only start once the sound has finished. The DMA
     # engine feeds the PIO on its own, so triggering and returning lets audio and
-    # the ~2.6 s panel refresh overlap. Call play_finished() before dropping the
+    # the panel refresh overlap. Call play_finished() before dropping the
     # power amp.
     def dma_play_words_async(self, buf):
         if DMA is None:
