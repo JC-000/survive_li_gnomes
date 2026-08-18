@@ -23,11 +23,32 @@ Three consequences:
 If power drops *during* a refresh the panel may be left mid-transition. The next
 press fixes it, and no data is at risk.
 
+## The answer set
+
+44 answers: the canonical twenty plus a darker set. They are grouped by
+disposition in `magic8.ANSWERS`, because the **ratio** between the groups is what
+gives the toy its character — a ball that mostly says no reads as mean rather
+than playful.
+
+| | affirmative | non-committal | negative |
+| --- | --- | --- | --- |
+| canonical twenty | 10 (50%) | 5 (25%) | 5 (25%) |
+| with the dark set | 18 (41%) | 12 (27%) | 14 (32%) |
+
+If it ever starts feeling sour rather than funny, that shift is the thing to
+look at, not the individual lines.
+
+Answer length is a design constraint, not free text: `fit()` drops to a smaller
+size as an answer gets longer, so short answers are also the ones that look best.
+Of the 44, 11 render at 3× and 33 at 2×; none need the 1× fallback. The longest,
+"The void declines to comment", is three lines at 2×.
+
 ## Randomness
 
 `os.urandom` is backed by the RP2350's hardware RNG. `magic8._rand_below` uses
-rejection sampling rather than `% 20`, which would bias the first 16 answers
-upward. Verified uniform over 20 000 draws (min 944, max 1042, expected 1000).
+rejection sampling rather than plain modulo, which would bias the early answers
+upward — at 44 answers it draws bytes below 220 and rejects the rest. Verified
+uniform over 220 000 draws (min 4852, max 5185, expected 5000).
 
 Consecutive repeats are suppressed — drawing the same answer twice in a row reads
 as a broken toy even though it is perfectly random.

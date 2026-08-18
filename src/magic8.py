@@ -8,10 +8,16 @@ import os
 
 import framebuf
 
-# The twenty canonical answers: ten affirmative, five non-committal, five
-# negative. Keep all twenty and keep the ratio -- it is what makes the toy feel
-# right.
+# Answers are grouped by disposition, because the ratio between the groups is
+# what gives the toy its character -- a ball that mostly says no feels mean
+# rather than playful. Weizenbaum's-era 8-Balls were deliberately 50% yes.
+#
+# Current mix: 18 affirmative / 12 non-committal / 14 negative = 41 / 27 / 32 %.
+# The classic twenty on their own were 50 / 25 / 25. Adding the darker set
+# shifted it; if it ever starts feeling sour, that is the number to look at.
 ANSWERS = (
+    # --- the canonical twenty ---------------------------------------------
+    # affirmative
     "It is certain",
     "It is decidedly so",
     "Without a doubt",
@@ -22,16 +28,47 @@ ANSWERS = (
     "Outlook good",
     "Yes",
     "Signs point to yes",
+    # non-committal
     "Reply hazy, try again",
     "Ask again later",
     "Better not tell you now",
     "Cannot predict now",
     "Concentrate and ask again",
+    # negative
     "Don't count on it",
     "My reply is no",
     "My sources say no",
     "Outlook not so good",
     "Very doubtful",
+
+    # --- darker additions --------------------------------------------------
+    # affirmative
+    "Yes, for now",
+    "The bones say yes",
+    "Yes, but you'll regret it",
+    "Yes, and no one will know",
+    "Inevitably, yes",
+    "Yes, tragically",
+    "Yes. Consequences later",
+    "It is written. Sorry",
+    # non-committal
+    "Better you don't know",
+    "Ask me when it matters",
+    "The void declines to comment",
+    "Concentrate on your affairs",
+    "Outlook obscured by dread",
+    "That is between you and time",
+    "Reply hazy. Like your future",
+    # negative
+    "Outlook fatal",
+    "No, but nice try",
+    "Not in this lifetime",
+    "Signs point to therapy",
+    "No, and stop asking",
+    "Ask your next of kin",
+    "My sources have gone quiet",
+    "Doubtful. Look behind you",
+    "Don't count on anything",
 )
 
 BLACK = 0x00

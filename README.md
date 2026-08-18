@@ -57,7 +57,7 @@ See [docs/design.md](docs/design.md) for why.
 | Path | What |
 | --- | --- |
 | `src/main.py` | Device entry point — input loop, autoruns at power-on |
-| `src/magic8.py` | The twenty answers, RNG, and screen rendering |
+| `src/magic8.py` | The 44 answers, RNG, and screen rendering |
 | `src/sounds.py` | Waveform synthesis — shake and fart. Pure DSP, host-testable |
 | `src/shake.py` | Codec, clip cache, and which sound a press gets |
 | `src/es8311.py`, `src/audio_pio_mpy.py` | Codec + I2S-over-PIO, vendored from Waveshare |
