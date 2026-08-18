@@ -19,9 +19,18 @@ Deploy with `./tools/deploy.sh`; `main.py` autoruns at power-on.
 
 `display()` completes normally against an **unpowered** panel — SPI writes land
 and `ReadBusy` returns instantly — so "no exception raised" proves nothing about
-what reached the glass. Check that BUSY was asserted (a real full refresh holds
-it ~1290 ms) or that PWR (GP13) is 0, or get a human to look. The same applies to
-audio. This exact gap shipped a bug that made the display update only once.
+what reached the glass. Check that BUSY was asserted — ~1290 ms for a full
+refresh, ~583 ms for a partial — or that PWR (GP13) is 0, or get a human to look.
+The same applies to audio. This exact gap shipped a bug that made the display
+update only once.
+
+## Don't sleep the panel after every draw
+
+`main.Panel` deliberately leaves the e-paper powered between presses. Partial
+refresh diffs against a base image held in the controller's RAM, and deep sleep
+can only be left via a hardware reset, which drops it — so sleeping after each
+draw (as an earlier version did) silently forces every refresh back to the slow,
+flashing full path. The panel sleeps on a 60 s idle timer instead.
 
 ## Audio is optional and must stay optional
 

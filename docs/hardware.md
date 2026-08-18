@@ -33,7 +33,22 @@ physical board on 2026-08-17.
 | RST | 14 |
 | BUSY | 15 (input, pull-up) |
 
-*Verified* — full-refresh draw completed and the panel holds the image.
+*Verified* — both refresh modes drive the panel and it holds the image with power
+removed.
+
+| | BUSY | wall | flashes? |
+| --- | --- | --- | --- |
+| full refresh | 1397 ms | 1715 ms | yes |
+| partial refresh | 583 ms | 612 ms | no |
+
+Partial refresh diffs against a base image in the controller's RAM, so the panel
+cannot be deep-slept between updates — deep sleep is only left via a hardware
+reset, which drops the base. `main.Panel` owns that policy; see
+[design.md](design.md#partial-refresh).
+
+Curiously, `init(PART_UPDATE)` *does* hardware-reset and the base image survives,
+so the SSD1681 retains RAM across reset even though registers clear. It looks
+like an ordering bug in the vendor code and is not one.
 
 ### Waking a sleeping panel needs PWR restored
 
@@ -119,6 +134,16 @@ Also: `AudioPIO.__init__` only stores configuration. The state machines stay
 `None` until `mclk_pio_init()` and `dout_pio_init()` are called, and `start()`
 silently does nothing without them.
 
+### Microphone
+
+Same codec, `DIN` on **GP2**. Bring up with `mclk_pio_init()` +
+`din_pio_init()`, then `dma_record_into(buf)` with an `array("h")` — the RX path
+is 16-bit mono, unlike the 32-bit packed playback path.
+
+*Verified*: 1 s captured at 24 kHz, exact timing, noise floor around -44 dBFS at
+`mic_gain=0`. `mic_gain=6` rails the input, so those units are not dB. Nothing in
+the project uses it yet.
+
 ## Battery
 
 200k / 200k divider (÷2) on **GP29** (ADC3), gated by **GP28**.
@@ -184,7 +209,14 @@ means building MicroPython with the correct flash size.
 
 ## Still open
 
-- ES8311 audio has not been brought up.
-- microSD untested.
-- The e-paper partial-update path (`displayPartBaseImage` / `init(part_update)`)
-  is vendored but unexercised.
+- **microSD** — untested; no card was ever inserted. Pins are SPI0 SCK 18,
+  MOSI 19, MISO 20, CS 23.
+- **Microphone** — captures cleanly (verified: 1 s at 24 kHz, noise floor around
+  -44 dBFS at gain 0, railed at gain 6, so the gain units are not dB), but
+  nothing uses it. It is the obvious route to recording a real clip in place of
+  a synthesised one.
+- **The other 13 MB of flash** — the stock `RPI_PICO2` build assumes a 4 MB part.
+  Recovering it needs a custom MicroPython build.
+
+Everything else on the board has been driven: display (full and partial refresh),
+touch, SHTC3, RTC, battery sense and the ES8311 codec.

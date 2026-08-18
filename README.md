@@ -80,12 +80,13 @@ See [docs/design.md](docs/design.md) for why.
 
 | Peripheral | Status |
 | --- | --- |
-| E-paper 200 × 200 | Working |
+| E-paper 200 × 200 | Working — full and partial refresh |
 | FT6336U touch | Working — polled over I2C, not via the INT pin |
 | Battery sense | Working — 4.21 V, matches factory firmware |
 | SHTC3 temp/humidity | Working — used by `examples/display_status.py` |
 | PCF85063A RTC | Working |
-| ES8311 audio | Working — plays the shake clip |
+| ES8311 audio | Working — plays the shake, fart and laugh clips |
+| ES8311 microphone | Captures cleanly, but nothing uses it yet |
 | microSD | Untested, no card inserted |
 
 Running MicroPython **v1.28.0** (`RPI_PICO2`, ARM). The factory C firmware was
