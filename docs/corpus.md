@@ -258,6 +258,43 @@ saturation**, so real audio carries a distortion no synthetic example contains.
 That is an unmodelled augmentation axis, independent of everything above, and
 the cheapest thing to add next.
 
+## Indexing audio that already exists
+
+```
+python3 tools/train_corpus.py corpus-tts/ --index
+```
+
+`manifest.json` is the authority and nothing downstream reads the directory
+layout, so an interrupted build leaves a tree full of usable audio that is
+completely unusable. `--index` walks what is on disk and writes the manifest
+without re-rendering anything — two hours saved when the WAVs are sound.
+
+**It refuses to bless a stale split.** The split lives in the path, so a tree
+written before a roster change disagrees with the roster now, and indexing it
+blindly would record a leak as fact. Any file whose directory disagrees with
+`roster.json`, or whose text is no longer in the plan, is moved to `_stale/`
+and reported.
+
+That is not hypothetical: it fired the first time it ran. The tree held two
+builds layered on top of each other, and **Daniel was physically present in
+both `val/` and `test/`** — 1142 files in `test/` from the pre-tier roster
+while the current one puts Daniel in `val/`. Nothing else would have noticed;
+`corpus.py --check` reads the manifest, so a manifest written over that tree
+would have passed the check *and* leaked.
+
+The reason the old tree survived at all is worth recording. A `rm -rf` meant to
+clear it was written as `rm -rf a b c corpus-tts/_raw.*.wav`, the glob matched
+nothing, and **zsh aborts the whole command on a failed glob** rather than
+passing it through as bash would. The output was one line — `no matches found`
+— which reads as a warning and was not. Nothing was deleted.
+
+What `--index` cannot recover is the per-utterance augmentation: gain, tilt,
+SNR and noise source are choices, not properties of the samples, so they are
+recorded as **null** rather than guessed. `samples` and `endpoint_ms` are
+recomputed from the audio and are real. Records carry `indexed: true` so a
+consumer can tell the two apart. A later full or resumed build merges over
+them, replacing nulls with the real values for anything it re-renders.
+
 ## What is in it
 
 37 voices × 1140 utterances = **42180 files, about 1.8 GB**, roughly 35 minutes

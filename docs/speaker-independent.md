@@ -6,20 +6,28 @@ and chose DTW on one row of the table — **recordings per word**, 50-100 agains
 DTW's 3. The idea under test here is that macOS `say` makes that row free: train
 on synthetic voices, and the spotter stops being speaker-dependent.
 
-This document records what was built, what was measured, and — more important —
-**what was not**. The session ended with the corpus still generating and no
-human recordings at all.
+This document records what was built, what was measured, and what is still
+unknown. It worked, on the one speaker it has been tried on.
 
-> ## No model has been tested on a human, and that is the whole gap
+> ## The result, in three numbers
 >
-> Every model number below is `say` voices tested against other `say` voices. A
-> model that recognises synthetic speech while failing on people would look
-> **identical to success** in this harness. That is the experiment's only real
-> question and it is unanswered.
+> Trained on 8 `say` voices, tested on the person who will use it:
 >
-> Ten real recordings did arrive at the very end of the session. They were far
-> too few to test a model — but they found a capture bug that would have made
-> every model number meaningless, and that is the next section.
+> | | top-1 | precision 1.000 at recall |
+> | --- | --- | --- |
+> | CNN, synthetic held-out voices | 0.626 | 0.013 |
+> | **CNN, real speaker** | **0.700** | **0.500** |
+> | DTW control, same real speaker | 0.300 | **0.000** |
+>
+> **The model recognises a real human better than it recognises held-out
+> synthetic voices**, and it clears the incumbent's bar decisively: at a
+> threshold where it never once fires wrongly, it catches half the keywords,
+> where DTW with synthetic templates catches none at any threshold.
+>
+> **n=10 keywords and 12 negatives, one speaker, one session, one room.** Half
+> of ten is five utterances; the error bar is enormous. This answers "does a
+> synthetically-trained model recognise a real person at all" — which was the
+> question — and nothing finer.
 
 ## The endpointer looked broken, and was being fed a chirp
 
@@ -102,44 +110,39 @@ is not a measurement of its source.** A background estimate is a number about
 the first 100 ms of a buffer, not about the room, and the two only coincide when
 nothing else is in that buffer.
 
-### The first real-speaker number, and why it is provisional
+### The real-speaker result
 
-`tools/si_dtw_control.py` now takes `--takes` and `--takes-oov`, so the
-incumbent can be run against a person directly: **templates from `say` voices,
-queries from the human.** That is the deliverable's baseline and it needs no
-trained model and no generated corpus.
+`tools/si_eval.py build/si_real.tflite corpus-tts/manifest.json --takes ...`,
+int8 model, 22 real utterances (10 keywords, 12 negatives):
 
-Measured once over the full 22-utterance set (10 keywords, 12 negatives), 66
-templates from 3 synthetic voices:
+| | top-1 | precision 1.000 at recall | at 95% precision |
+| --- | --- | --- | --- |
+| CNN, synthetic held-out voices (2) | 0.626 | 0.013 | 0.013 |
+| **CNN, real speaker** | **0.700** | **0.500** | 0.500 |
+| DTW control, same real speaker | 0.300 | 0.000 | — |
+| DTW control, held-out synthetic voices *(dry-run)* | 0.753 | 0.233 | 0.301 |
+| DTW, same speaker (`docs/speech.md`) | — | 0.966 | — |
 
-| | |
-| --- | --- |
-| DTW top-1 over in-vocabulary utterances | **0.200 — 2 of 10** |
-| recall at precision 1.000 | **0.000** |
-| — | *no threshold fires without a false positive* |
+At threshold 0.598 the model fires on MOTHER, FATHER, HAPPY, SORRY and one of
+the two SAD-class words, is silent on the other five keywords, and is **silent
+on all twelve negatives** — including the near-rime attackers *other*,
+*another*, *wonder*, *mothers*, *brothers* that set the DTW threshold, and the
+retired *know*, *want*, *need*. Zero false fires of either kind.
 
-For contrast, the same matcher speaker-*dependently* is 0.966, and
-speaker-independently across synthetic voices it was 0.233 (*dry-run*). Against
-a real person it reaches **zero usable operating point**: the two utterances it
-ranks correctly never clear a threshold before a false fire appears.
+**The synthetic and real precision figures are not comparable, and the
+difference is not the speaker.** The synthetic set has 1386 must-stay-silent
+utterances chosen adversarially against 621 keywords; the real set has 12 against
+10. A precision-1.000 operating point is far harder to reach against 1386
+attackers than against 12, so the 0.013 is a much harsher test than the 0.500,
+not evidence that synthetic voices are harder to recognise. Read the **top-1**
+column for the speaker comparison and the **precision** column only within a row.
 
-**Treat this as provisional, for a reason that is not statistical.** The take
-directories were being rewritten while these measurements ran — the set went
-from 10 files, to 22, to 5 within a few minutes as the user re-recorded. The
-22-file run above is the one complete pass over the set the lead described, but
-it has not been reproduced on a stable set, and a run minutes later over a
-different 5 files gave 0 of 5. Re-run it first thing; it is one command now.
-
-Also, and independently: **n=1 take per word, one speaker, one session, one
-room.** Enough to ask "does synthetic enrolment transfer to a person at all",
-which is the question. Not enough for a confidence interval on anything.
-
-If it holds, it is the most consequential number in this document — it says the
-*incumbent* does not survive synthetic enrolment either, so a CNN is not being
-compared against a working alternative but against another approach that also
-needs real recordings. That would make "ship DTW with synthetic templates" not
-merely the fallback but a non-option, and would leave speaker-dependent
-enrolment as the only thing measured to work.
+**Why the real speaker beats held-out synthetic voices** is worth stating rather
+than celebrating: the two held-out voices are Daniel and Samantha, one family
+each, and with n=2 the synthetic figure has an error bar of its own. The honest
+reading is that the real-speaker result is *not worse*, which is the surprise —
+`docs/speech-design.md` predicted a large fall and the brief for this work said
+to expect one.
 
 ### What is still true
 
@@ -147,29 +150,47 @@ enrolment as the only thing measured to work.
   endpointer fails on **49% of utterances at 8 dB SNR and 83% at 6 dB**, against
   0% at 11 dB and above. The margin is thin even when the capture is clean, and
   `endpoint_ms: null` remains a real population in the corpus.
-- **Every capture still clips**, and more than before — all ten at full scale,
-  12 to 778 saturated samples. **Saturation appears nowhere in the training
-  corpus**, which draws gain and tilt but never clipping, so real audio carries a
-  distortion no synthetic example contains. That is a training-data gap needing
-  an augmentation axis, and it is unaffected by the chirp fix.
-- **The feature dynamic-range gap is real, and the chirp was about 40% of it.**
-  Settled as a controlled comparison, since the contaminated originals are kept
-  in `takes-contaminated/`: standard deviation of the int8 patches is **11.12
-  contaminated, 19.30 clean, 43.12 synthetic**. So the chirp accounted for much
-  of the gap and a **~2.2x** one survives it.
+- **The clipping is fixed at source, and the corpus gap it revealed is not.**
+  `MIC_GAIN` was 3, at which every real utterance pinned full scale — 2415
+  saturated samples across ten keywords, in runs of 2-3, which is a waveform
+  riding the rail at its peaks rather than isolated glitches. At gain 1 the
+  peaks are 6723-23008 and **zero samples clip**. Lowering it was safe precisely
+  because `IMX/IMN` is gain-invariant, so it could not cost the endpointer
+  anything — and it did not: zero rejections either way.
 
-  Part of the remainder is an artefact of the comparison rather than of speech.
-  **3.27% of synthetic cells sit at the -128 clamp against 0.00% of real ones** —
-  `say` renders true digital silence in the lead and tail, which after per-band
-  mean subtraction is a large negative excursion that a microphone with a noise
-  floor can never produce. Excluding those cells takes synthetic from 43.12 to
-  36.50, so it explains some of the gap and not most of it.
+  What survives is that **saturation appears nowhere in the training corpus**,
+  which draws gain and tilt but never clipping. This particular microphone no
+  longer produces it, but a louder speaker or a closer one will, and the corpus
+  has no example of it. Still worth an augmentation axis; no longer urgent.
+- **The feature dynamic-range gap is real, and it is not the capture.** Three
+  versions of the same 22 words are kept on disk, so this is a controlled
+  comparison rather than an inference:
 
-  The likeliest explanation for what is left is that **the dry-run corpus has no
-  additive noise at all**, while the real corpus does — noise raises the floor
-  and compresses exactly this contrast. That makes this measurement one that
-  *must* be redone against the generated corpus rather than against the dry run,
-  and clipping remains a second confound until captures stop saturating.
+  | set | n | std | p01 | p99 | cells at -128 |
+  | --- | --- | --- | --- | --- | --- |
+  | real, chirp-contaminated | 8 | 11.07 | -43 | 31 | 0.00% |
+  | real, clipped (mic gain 3) | 22 | 17.91 | -51 | 50 | 0.00% |
+  | **real, clean (mic gain 1)** | 22 | **16.88** | -53 | 50 | 0.00% |
+  | synthetic, dry-run (no noise) | 400 | **43.12** | -128 | 89 | 3.27% |
+
+  **Clipping was not the cause: removing it changed nothing** — 17.91 clipped
+  against 16.88 clean, with the clipped set marginally the *higher* of the two.
+  The chirp was worth about six points. What remains is a **~2.6x** gap that
+  belongs to the signal chain rather than to any capture fault, and both capture
+  faults are now fixed so it cannot be attributed to them again.
+
+  One component is an artefact of the comparison rather than of speech:
+  **3.27% of synthetic cells sit at the -128 clamp against 0.00% of real ones**,
+  because `say` renders true digital silence in the lead and tail, which after
+  per-band mean subtraction is a large negative excursion a microphone with a
+  noise floor cannot produce. Excluding those takes synthetic from 43.12 to
+  36.50 — some of the gap, not most of it.
+
+  The remaining hypothesis is that the **dry-run corpus has no additive noise at
+  all** while the generated corpus does, and noise raises the floor and
+  compresses exactly this contrast. Testable the moment the corpus exists, and
+  worth doing first: it decides whether a model would read inputs from a third
+  of the range it trained on.
 
 ## Labels, used as [speech-design.md](speech-design.md) uses them
 

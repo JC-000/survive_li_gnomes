@@ -513,6 +513,113 @@ def build_voice(job):
     return records
 
 
+def slug_lookup(rates):
+    """`slug -> (text, category, label, attacks)` for everything we synthesise.
+
+    Filenames carry a slug, not the text, and `sc.slug` is not invertible --
+    "i don't know" and "i_don_t_know" both slug to the same thing. So the plan
+    is regenerated and indexed by slug rather than parsed back out of the path.
+    """
+    out = {}
+    for form in vocab.FORMS:
+        out[sc.slug(form)] = (form, "word", vocab.label_of(form), None)
+    varmap = variants_map()
+    for text, cat, attacks in unknown_words():
+        s = sc.slug(text)
+        out[s] = (text, cat, varmap.get(s), attacks)
+    _ = rates
+    return out
+
+
+def index_existing(root, roster, quarantine=True):
+    """Write a manifest for audio already on disk, without re-rendering it.
+
+    A full build is about two hours, and an interrupted one leaves a usable
+    tree with no index -- which is unusable, because `manifest.json` is the
+    authority and nothing downstream reads the directory layout. This walks
+    what is there instead.
+
+    **It also refuses to bless a stale split.** The split lives in the path,
+    so a tree written before a roster change disagrees with the roster now, and
+    indexing it blindly would record a leak as fact. Any file whose directory
+    disagrees with `roster.json` is moved to `_stale/` and reported, because
+    the alternative -- excluding it from the manifest but leaving it in place --
+    leaves a resumable build thinking it is already done.
+
+    What cannot be recovered is the per-utterance augmentation: gain, tilt,
+    SNR and noise source are choices, not properties of the samples, and they
+    are recorded as null rather than guessed. `endpoint_ms` and `samples` are
+    recomputed from the audio, so they are real.
+    """
+    by_name = dict((v["name"], v) for v in roster["voices"])
+    slugs = slug_lookup(RATES)
+    stale_dir = os.path.join(root, "_stale")
+    records = []
+    stale = []
+    unknown_voice = []
+
+    for split in ("train", "val", "test"):
+        base = os.path.join(root, split)
+        if not os.path.isdir(base):
+            continue
+        for cat in sorted(os.listdir(base)):
+            catdir = os.path.join(base, cat)
+            if not os.path.isdir(catdir):
+                continue
+            for vslug in sorted(os.listdir(catdir)):
+                vdir = os.path.join(catdir, vslug)
+                if not os.path.isdir(vdir):
+                    continue
+                voice = next((n for n in by_name if sc.slug(n) == vslug), None)
+                files = sorted(f for f in os.listdir(vdir) if f.endswith(".wav"))
+                if voice is None:
+                    unknown_voice.append((split, cat, vslug, len(files)))
+                    continue
+                v = by_name[voice]
+                if v["split"] != split:
+                    stale.append((split, cat, voice, v["split"], len(files)))
+                    if quarantine:
+                        dest = os.path.join(stale_dir, split, cat, vslug)
+                        os.makedirs(os.path.dirname(dest), exist_ok=True)
+                        os.rename(vdir, dest)
+                    continue
+                for name in files:
+                    path = os.path.join(vdir, name)
+                    parts = name[:-4].rsplit(".", 2)
+                    if len(parts) != 3 or not parts[1].startswith("r"):
+                        continue
+                    base_slug, rate = parts[0], int(parts[1][1:])
+                    if base_slug not in slugs:
+                        stale.append((split, cat, "%s/%s" % (voice, base_slug),
+                                      "not in the plan", 1))
+                        if quarantine:
+                            dest = os.path.join(stale_dir, split, cat, vslug)
+                            os.makedirs(dest, exist_ok=True)
+                            os.rename(path, os.path.join(dest, name))
+                        continue
+                    text, plan_cat, label, attacks = slugs[base_slug]
+                    with wave.open(path, "rb") as w:
+                        samples = array.array("h", w.readframes(w.getnframes()))
+                    seg = vad.trim(samples)
+                    records.append({
+                        "file": os.path.relpath(path, root), "split": split,
+                        "category": plan_cat, "label": label, "text": text,
+                        "voice": voice, "family": v["family"], "tier": v["tier"],
+                        "locale": v["locale"], "rate_wpm": rate,
+                        "attacks": attacks,
+                        # Choices, not properties of the samples. Null rather
+                        # than guessed -- see the docstring.
+                        "gain_db": None, "tilt": None, "snr_db": None,
+                        "lead_ms": None, "noise": None, "noise_dbfs": None,
+                        "speech_dbfs": None,
+                        "samples": len(samples),
+                        "endpoint_ms": (None if seg is None
+                                        else round(len(seg) * 1000.0 / RATE)),
+                        "indexed": True,
+                    })
+    return records, stale, unknown_voice
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("root", help="corpus directory; must contain roster.json")
@@ -522,6 +629,12 @@ def main(argv=None):
     ap.add_argument("--variants", type=int, default=VARIANTS)
     ap.add_argument("--voices", help="comma-separated subset, for a quick look")
     ap.add_argument("--background", default=BACKGROUND_DIR)
+    ap.add_argument("--index", action="store_true",
+                    help="write a manifest for audio already on disk, "
+                         "without re-rendering it")
+    ap.add_argument("--keep-stale", action="store_true",
+                    help="with --index, report a stale split but do not "
+                         "move the files to _stale/")
     ap.add_argument("--plan", action="store_true",
                     help="print the size and stop, without synthesising")
     ap.add_argument("--fresh", action="store_true",
@@ -542,6 +655,52 @@ def main(argv=None):
         voices = [v for v in voices if v["name"] in want]
         if not voices:
             sys.exit("none of those voices are in the roster")
+
+    if args.index:
+        records, stale, orphan = index_existing(
+            args.root, roster, quarantine=not args.keep_stale)
+        for split, cat, voice, want, n in stale:
+            print("STALE: %s/%s/%s belongs in %s -- %d file(s) %s"
+                  % (split, cat, voice, want, n,
+                     "left in place" if args.keep_stale
+                     else "moved to _stale/"), file=sys.stderr)
+        for split, cat, vslug, n in orphan:
+            print("ORPHAN: %s/%s/%s is not in the roster -- %d file(s) ignored"
+                  % (split, cat, vslug, n), file=sys.stderr)
+        manifest = os.path.join(args.root, "manifest.json")
+        merged = {}
+        if os.path.exists(manifest):
+            with open(manifest) as h:
+                for r in json.load(h).get("entries", []):
+                    merged[r["file"]] = r
+        # On-disk evidence wins over a stored record: the file is the fact.
+        merged.update((r["file"], r) for r in records)
+        # A record whose audio has since been quarantined must not survive.
+        merged = dict((k, v) for k, v in merged.items()
+                      if os.path.exists(os.path.join(args.root, k)))
+        doc = {"generated_by": "tools/train_corpus.py --index",
+               "rate": RATE, "rates_wpm": list(rates),
+               "variants": args.variants,
+               "roster": os.path.relpath(roster_path, args.root),
+               "entries": sorted(merged.values(), key=lambda r: r["file"])}
+        with open(manifest, "w") as h:
+            json.dump(doc, h, indent=1, sort_keys=True)
+            h.write("\n")
+        counts = {}
+        for r in doc["entries"]:
+            counts[(r["split"], r["category"])] = \
+                counts.get((r["split"], r["category"]), 0) + 1
+        print("%s: %d utterances indexed" % (manifest, len(doc["entries"])))
+        print("%-6s %8s %8s %8s %8s"
+              % ("split", "voices", "word", "unknown", "variant"))
+        for split in ("train", "val", "test"):
+            rows = [r for r in doc["entries"] if r["split"] == split]
+            print("%-6s %8d %8d %8d %8d"
+                  % (split, len(set(r["voice"] for r in rows)),
+                     counts.get((split, "word"), 0),
+                     counts.get((split, "unknown"), 0),
+                     counts.get((split, "variant"), 0)))
+        return 0
 
     unknowns = unknown_words()
     per_voice = sum(e[5] for e in utterance_plan(

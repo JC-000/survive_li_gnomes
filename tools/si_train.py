@@ -385,10 +385,20 @@ def train(x_tr, y_tr, x_va, y_va, arch="dscnn", width=1.0, epochs=60,
         # cannot be thresholded, and thresholding is the whole design.
         loss=keras.losses.SparseCategoricalCrossentropy(),
         metrics=["accuracy"])
+    # Both callbacks watch **val_loss**, not val_accuracy, and that is not a
+    # detail. Measured on the real corpus: weighted val_accuracy peaks at epoch
+    # 1 (0.712) and declines from there while val_loss falls monotonically
+    # (1.93 -> 0.97). Accuracy is a step function of the argmax and an
+    # imbalanced set lets "say unknown" score well on it early, so
+    # `restore_best_weights` on that signal reliably restores the degenerate
+    # first epoch -- a model that predicts `unknown` for everything and reports
+    # a respectable number. The loss sees the whole probability vector and is
+    # the only one of the two that improves when the model starts learning
+    # keywords.
     callbacks = [
-        keras.callbacks.ReduceLROnPlateau(monitor="val_accuracy", factor=0.5,
+        keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5,
                                           patience=6, min_lr=1e-5, verbose=0),
-        keras.callbacks.EarlyStopping(monitor="val_accuracy", patience=15,
+        keras.callbacks.EarlyStopping(monitor="val_loss", patience=15,
                                       restore_best_weights=True, verbose=0),
     ]
     # The validation set is weighted with the same class weights as training,
@@ -425,9 +435,31 @@ def to_int8_tflite(model, x_rep, path):
     """
     import tensorflow as tf
 
+    # The representative set must span the full int8 range, and it is made to
+    # rather than hoped to.
+    #
+    # TFLite derives the input scale from the observed min and max. A corpus
+    # with additive noise never reaches the -128 clamp -- measured, 0.00% of
+    # real-corpus cells against 3.77% of the noise-free dry-run's -- so the
+    # observed range is roughly [-60, +55] and the converter picks scale 0.902,
+    # zero point 14. The device cannot honour that: emlearn's wrapper computes
+    # `quantised = uint8 - 128` and never reads the model's own scale. It would
+    # feed numbers the network was not trained on, silently.
+    #
+    # So two calibration patches carry the contract explicitly. They are real
+    # patches with two cells forced to the extremes, rather than constant
+    # -128/+127 blocks: the min and max are what set the input scale, while the
+    # bulk statistics are what set every *internal* activation range, and a
+    # pair of unnatural full-scale images would inflate those for nothing.
     def rep():
-        for i in range(0, min(len(x_rep), 500)):
+        n = min(len(x_rep), 500)
+        for i in range(n):
             yield [x_rep[i:i + 1].astype("float32")[..., None]]
+        for i in range(2):
+            edge = x_rep[i:i + 1].astype("float32").copy()
+            edge[0, 0, 0] = -128.0
+            edge[0, 0, 1] = 127.0
+            yield [edge[..., None]]
 
     conv = tf.lite.TFLiteConverter.from_keras_model(model)
     conv.optimizations = [tf.lite.Optimize.DEFAULT]

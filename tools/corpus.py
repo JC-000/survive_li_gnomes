@@ -50,7 +50,15 @@ import vocab  # noqa: E402
 
 SYNTHETIC_SPLITS = ("train", "val", "test")
 HUMAN_SPLIT = "human"
-DEFAULT_TAKES = "takes"
+# Every directory of human speech. All six are test-side only: `takes` and
+# `takes-oov` are the current clean captures, and the `-contaminated` and
+# `-clipped` pairs are earlier attempts kept for comparison -- the first with
+# the activation chirp bleeding into the noise-floor estimate, the second at
+# MIC_GAIN 3. None of them may ever be trained on, so they all load under the
+# `human` split and none is reachable from `split_for_training`.
+DEFAULT_TAKES = "takes,takes-oov"
+HUMAN_DIRS = ("takes", "takes-oov", "takes-contaminated", "takes-clipped",
+              "takes-oov-contaminated", "takes-oov-clipped")
 
 # docs/speech.md fixes the feature contract at 16 kHz mono int16. A take at any
 # other rate is not a take that needs resampling, it is a capture that went out
@@ -119,6 +127,19 @@ def split_for_training(root):
 
 
 def load_takes(root=DEFAULT_TAKES, require=False):
+    """Accepts one directory or a comma-separated list of them."""
+    if isinstance(root, str) and "," in root:
+        out, notes = [], []
+        for one in (r.strip() for r in root.split(",") if r.strip()):
+            recs, note = _load_takes_dir(one, require)
+            out.extend(recs)
+            if note:
+                notes.append(note)
+        return out, "; ".join(notes) if notes else None
+    return _load_takes_dir(root, require)
+
+
+def _load_takes_dir(root, require=False):
     """The real human held-out set, or an empty list if it is not there yet.
 
     Returns `(records, note)`. `note` is None when everything was found and a
