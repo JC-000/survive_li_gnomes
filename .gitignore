@@ -45,3 +45,12 @@ src/templates.py
 # tools/fetch_tflm.sh from two pinned upstream commits. ~20 MB, regenerable,
 # and not ours to version.
 vendor/tflm/
+
+# Hooks are local per the standing scrub-replay policy (.githooks/ is in its
+# BANNED_PATHS: committed hooks get stripped at scrub time, so committing them
+# only creates drift). tools/setup_hooks.sh regenerates them per clone.
+.githooks/
+# Local banned-literal overlay: the actual sensitive strings, which must never
+# themselves be committed. Generated from ~/Documents/scrub-replay-config.sh
+# by tools/setup_hooks.sh.
+.banned-patterns.local

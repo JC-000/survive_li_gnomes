@@ -1,0 +1,12 @@
+name: banned-content
+on: [push, pull_request]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: tree scan
+        run: ./tools/check_banned.sh tree
+      - name: history scan
+        run: ./tools/check_banned.sh history

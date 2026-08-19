@@ -1,0 +1,19 @@
+# Banned-content patterns, one extended regex per line. '#' comments.
+# Enforced by tools/check_banned.sh via .githooks/ (commits, pushes) and the
+# PR workflow. This file is public: patterns describe CLASSES of secret and
+# must never contain an actual secret -- a banned-strings file that contains
+# the strings defeats itself the moment the repo is public.
+#
+# Personal identifiers
+[A-Za-z0-9._%+-]+@(icloud|gmail|me|outlook|yahoo)\.com
+/Users/[a-z_][a-z0-9_-]*
+/home/[a-z_][a-z0-9_-]*
+claude-[0-9]{3}
+#
+# Credential shapes
+gh[opsu]_[A-Za-z0-9]{20,}
+sk-[A-Za-z0-9_-]{20,}
+AKIA[0-9A-Z]{16}
+xox[baprs]-[A-Za-z0-9-]{10,}
+-----BEGIN [A-Z ]*PRIVATE KEY
+Authorization: (Bearer|Basic) [A-Za-z0-9+/=_.-]{16,}
