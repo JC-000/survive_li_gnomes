@@ -372,7 +372,7 @@ Skip the `ava_*.pcmw` audition clips; they were dropped deliberately.
 `templates.bin` will warn and that is the known state — no enrolment has ever
 been completed.
 
-### `voice.pak` is the one upload nothing verifies
+### `voice.pak` is verified on the device, and here is why it has to be
 
 1.9 MB over `mpremote cp`, and **nothing downstream would notice a truncated
 transfer**. A short pak still has a valid header, `Pak.open()` still reports the
@@ -381,23 +381,27 @@ bisects — so the boot line `voice.pak bound (113 clips, 16000 Hz)` prints
 exactly as it does on a good upload. The first clip whose blob starts past the
 cut is the one that fails, mid-reply, and it presents as a decoder bug.
 
-So check it by hand after a deploy, at least when the voice misbehaves:
+`deploy.sh` therefore hashes the file **on the board** after copying it and
+refuses the deploy on a mismatch. Reading the count back is not a substitute and
+neither is `ls`: both are satisfied by the first 16 bytes.
+
+To check a board that is already deployed, without redeploying:
 
 ```sh
-uvx mpremote connect $PORT cp :voice.pak /tmp/voice.pak.readback
-shasum -a 256 /tmp/voice.pak.readback corpus-voice/voice.pak
+uvx mpremote connect $PORT exec "
+import hashlib, binascii
+h = hashlib.sha256(); buf = bytearray(4096)
+with open('voice.pak', 'rb') as f:
+    while True:
+        n = f.readinto(buf)
+        if not n: break
+        h.update(memoryview(buf)[:n])
+print(binascii.hexlify(h.digest()).decode())"
+shasum -a 256 corpus-voice/voice.pak
 ```
 
-Both lines must show the same digest. For the 2026-08-19 corpus that is
+For the 2026-08-19 corpus both must read
 `2b4bf8a5b3165e86609a8fb950f4497eefd8c5b8d7b0f8e0dac3a8d3be8197fe`.
-
-***Unverified** — written from the format, not run. It has not been executed
-against a board, and `mpremote cp` off the device is the part to distrust. Run
-it once when the board is free, then either fix it or wire it into
-`tools/deploy.sh`.* Deliberately a recipe here rather than a step in
-`deploy.sh`: an unrun verification step inside the deploy would either be
-silently skipped or fail every deploy, and a check that claims to verify
-without having verified anything is the failure `CLAUDE.md` opens with.
 
 ### Then leave the board in the friendly REPL, not the raw one
 
