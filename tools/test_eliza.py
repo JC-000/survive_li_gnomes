@@ -861,21 +861,39 @@ class TestReadsAsEnglish(unittest.TestCase):
 class TestPanelBudget(unittest.TestCase):
     """Replies must still fit the panel now that they are a character longer.
 
-    screen.py renders at 12 columns x 9 lines at scale 2, and device-io measured
-    the worst case at exactly 9 lines with a six-word echo in every slot -- no
-    headroom at all. Adding terminal punctuation was therefore not obviously
-    free, and it is not: two templates tip to 10 lines under that stress input
-    and drop to the 8-pixel size. Both are unreachable from the device (one is
-    PHRASE, filtered in bag mode; the other is MEMORY, which only fills on the
-    ordered path the device never uses), and at the one-word echo the device
-    actually produces there are three lines to spare.
+    Measured against the *real* screen.fit, with framebuf stubbed, rather than
+    a reimplementation of it here. Two earlier versions of these tests wrapped
+    text at 12 columns by hand and got the wrong answer, because that is not
+    what fit() does:
 
-    This pins both numbers so the next person to lengthen a template finds out
-    here rather than on the glass.
+    - fit() rejects a size outright when any single word exceeds the column
+      width, before it ever counts lines;
+    - and when it falls back to scale 1 the reply gets 23 columns, so an
+      overflowing reply renders in *fewer* lines, not more. Counting lines
+      cannot detect overflow at all. Ask about the scale.
+
+    Overflow here means "dropped to the 8-pixel size", which is a legibility
+    cliff rather than truncation -- nothing is lost, it just gets small.
     """
 
-    COLUMNS = 12
+    SCALE_2 = 2
     MAX_LINES = 9
+
+    @classmethod
+    def setUpClass(cls):
+        import types
+        if "framebuf" not in sys.modules:
+            sys.modules["framebuf"] = types.SimpleNamespace(
+                FrameBuffer=object, MONO_HLSB=0)
+        import screen
+        cls.screen = screen
+
+    def setUp(self):
+        try:
+            import vocab
+        except ImportError:
+            self.skipTest("src/vocab.py not present")
+        self.vocab = vocab
 
     def replies(self):
         out = [p for _, _, rs in rules.RULES.values() for _, ts in rs
@@ -889,7 +907,7 @@ class TestPanelBudget(unittest.TestCase):
                for k, m, p in ts if k in rules.SPOTTABLE]
         return out + list(rules.NONE)
 
-    def lines(self, template, echo):
+    def render(self, template, echo):
         filled = []
         for word in template.split():
             mark = ""
@@ -898,22 +916,18 @@ class TestPanelBudget(unittest.TestCase):
                 word = word[:-1]
             index = eliza.slot_of(word)
             filled.append((echo if index is not None else word) + mark)
-        return len(eliza_wrap(" ".join(filled), self.COLUMNS))
+        return self.screen.fit(" ".join(filled))
 
-    def test_device_reachable_replies_fit_with_room(self):
-        # The device echoes exactly one spotted noun, never a phrase.
-        worst = max(self.lines(t, "CHILDREN") for t in self.spoken())
-        self.assertLessEqual(worst, self.MAX_LINES - 2,
-                             "no headroom left at a one-word echo: %d lines" % worst)
+    def overflows(self, template, echo):
+        scale, _lines = self.render(template, echo)
+        return scale < self.SCALE_2
 
     def test_the_corpus_includes_memory(self):
-        """MEMORY is a separate tuple, not part of RULES, and easy to omit.
+        """MEMORY and NONE are separate tuples from RULES, and easy to omit.
 
-        A budget sweep that walks RULES alone misses it and reports one
-        overflowing template instead of two -- which is how two teams end up
-        holding different numbers for the same measurement. It is only
-        unreachable from the device because nothing calls the ordered path;
-        that is a property of talk.py, not of the data.
+        A sweep that walks RULES alone misses them silently. Kept even though
+        it has never caught anything: it asserts that the sweep contains what
+        it claims to sweep, which no other test here can say.
         """
         corpus = self.replies()
         for _pattern, _mood, template in rules.MEMORY:
@@ -921,73 +935,71 @@ class TestPanelBudget(unittest.TestCase):
         for template in rules.NONE:
             self.assertIn(template, corpus, "NONE missing from the sweep")
 
-    # Six echo strings spanning the ways a captured phrase can pack into a
-    # 12-column line. Which templates overflow depends on *word lengths*, not
-    # on total characters: "your mother and your father again" is four
-    # characters longer than "my mother always shouts at me" and wraps a line
-    # shorter, because its words pair up under 12 and the other's do not.
-    ECHOES = (
-        "mother",                                    # what the device produces
-        "CHILDREN",                                  # its longest noun
-        "my mother always shouts at me",             # packs badly
-        "your mother and your father again",         # packs well, and longer
-        "a b c d e f",                               # many short words
-        "aaaaaaaaaaaa bbbbbbbbbbbb cccccccccccc",    # unpackable
-    )
+    def test_every_vocabulary_noun_fits(self):
+        """The echo domain is enumerable, so enumerate it.
 
-    def test_nothing_device_reachable_ever_overflows(self):
-        """The echo-independent claim, which is the one worth asserting.
-
-        An earlier version of this test named the two templates that overflow
-        under one particular stress string. That was pinning an artifact: the
-        overflow *set* is a property of the echo, not of the rule data, and
-        counting it produced two teams holding different numbers for the same
-        measurement -- 2 here and 1 in test_talk.py -- with neither wrong.
-
-        What does not vary is this: whatever overflows, bag mode has already
-        filtered it out. That holds for every echo below and is the thing a
-        regression would actually break.
+        The device echoes exactly one spotted vocabulary noun -- twelve
+        strings, not a distribution -- so there is nothing to sample and no
+        stress input to choose. Two earlier versions of this test picked a
+        representative phrase instead, and both pinned an artifact of the
+        phrase rather than a property of the rule data.
         """
-        spoken = set(self.spoken())
-        for echo in self.ECHOES:
-            over = [t for t in self.replies() if self.lines(t, echo) > self.MAX_LINES]
-            for template in over:
-                self.assertNotIn(template, spoken,
-                                 "%r overflows and the device can reach it "
-                                 "(echo %r)" % (template, echo))
+        self.assertGreaterEqual(len(self.vocab.NOUNS), 8, "noun list collapsed")
+        for noun in self.vocab.NOUNS:
+            for template in self.spoken():
+                scale, lines = self.render(template, noun)
+                self.assertEqual(scale, self.SCALE_2,
+                                 "%r drops to scale 1 echoing %s" % (template, noun))
+                self.assertLessEqual(len(lines), self.MAX_LINES,
+                                     "%r is %d lines echoing %s"
+                                     % (template, len(lines), noun))
 
     def test_the_device_echo_leaves_headroom(self):
-        # The device echoes one spotted noun, never a phrase, so this is the
-        # measurement that describes the shipped program rather than a
-        # hypothetical about the ordered path.
-        for echo in ("mother", "CHILDREN"):
-            worst = max(self.lines(t, echo) for t in self.spoken())
-            self.assertLessEqual(worst, self.MAX_LINES - 2,
-                                 "only %d lines spare at echo %r"
-                                 % (self.MAX_LINES - worst, echo))
+        worst, worst_noun = 0, None
+        for noun in self.vocab.NOUNS:
+            for template in self.spoken():
+                _scale, lines = self.render(template, noun)
+                if len(lines) > worst:
+                    worst, worst_noun = len(lines), noun
+        self.assertLessEqual(worst, self.MAX_LINES - 2,
+                             "only %d lines spare (worst: %s at %d lines)"
+                             % (self.MAX_LINES - worst, worst_noun, worst))
 
+    def test_a_noun_longer_than_eleven_letters_would_break_the_layout(self):
+        """The constraint anyone editing vocab.NOUNS needs, and the real find.
 
-def eliza_wrap(text, cols):
-    """magic8.wrap without importing framebuf, which the host does not have."""
-    lines = []
-    line = ""
-    for word in text.split():
-        while len(word) > cols:
-            if line:
-                lines.append(line)
-                line = ""
-            lines.append(word[:cols])
-            word = word[cols:]
-        if not line:
-            line = word
-        elif len(line) + 1 + len(word) <= cols:
-            line += " " + word
-        else:
-            lines.append(line)
-            line = word
-    if line:
-        lines.append(line)
-    return lines
+        fit() skips a size when any word is wider than the column count, and
+        the echoed noun carries the reply's question mark -- so a 12-letter
+        noun is 13 characters in a 12-column line and drops the *entire* reply
+        to 8-pixel text. GRANDMOTHER (11) is the longest that still renders at
+        scale 2; RELATIONSHIP (12) does not.
+
+        This is what the twelve-letter stress echo was accidentally detecting,
+        and it is worth asserting directly rather than by proxy.
+        """
+        for noun in self.vocab.NOUNS:
+            self.assertLessEqual(len(noun), 11,
+                                 "%s is %d letters; 11 is the limit at 12 "
+                                 "columns once the '?' is added"
+                                 % (noun, len(noun)))
+        self.assertEqual(self.screen.fit("YOUR GRANDMOTHER?")[0], 2)
+        self.assertEqual(self.screen.fit("YOUR RELATIONSHIP?")[0], 1)
+
+    def test_beyond_the_device_nothing_is_asserted_but_it_is_measured(self):
+        """Longer echoes are reported, never asserted.
+
+        How far past the real input the layout holds is worth knowing when
+        someone proposes a longer noun. It is not worth a test that breaks when
+        somebody edits an arbitrary string, which is how the previous two
+        versions of this failed.
+        """
+        for echo in ("my mother always shouts at me",
+                     "your mother and your father again"):
+            over = [t for t in self.replies() if self.overflows(t, echo)]
+            for template in over:
+                self.assertNotIn(template, self.spoken(),
+                                 "%r overflows at a phrase echo and the "
+                                 "device can reach it" % template)
 
 
 class TestAssumptionGuards(unittest.TestCase):

@@ -583,25 +583,57 @@ def test_the_reply_renders():
               "%d overflow, first: %s" % (len(overflow_reachable),
                                           overflow_reachable[:1]))
 
-    # The stress case is where it gets tight, and where the only overflow lives
-    # in templates bag mode filters out. Named rather than counted: a corpus
-    # that quietly lost a member would otherwise reach the right total for the
-    # wrong reason, which is how the phantom 202 survived as long as it did.
+    # What NOT to assert here, learned by asserting it twice. First "exactly one
+    # template overflows under stress, and it is this one" -- which pins an
+    # artifact of the echo string, because greedy wrap cares about word
+    # *lengths*, not character counts: six-letter words that cannot pair cost a
+    # line each, so a *shorter* echo can overflow where a longer one fits.
+    # Measured: "my mother always shouts at me" (84 chars) overflows and falls
+    # back to scale 1, while "your mother and your father again" (88 chars) fits
+    # at 9 lines.
+    #
+    # Then the proposed repair -- "whatever overflows, bag mode has filtered it
+    # out, for any echo" -- which also fails: an echo of three twelve-letter
+    # words overflows 83 templates here, device-reachable ones among them.
+    #
+    # The claim that holds is the one scoped to inputs the device can actually
+    # produce. The echo is one spotted vocabulary noun, so that domain is twelve
+    # strings and can be swept exhaustively rather than sampled.
+    budget = screen._SIZES[0][2]
+    worst_noun = None
+    worst_lines = 0
+    for noun in vocab.NOUNS:
+        echo = noun.lower()
+        reachable_over = [t for r, t in _reply_templates()
+                          if r and _overflows(t, echo)]
+        check("echo %-10s (a real spotted noun): nothing reachable overflows"
+              % ('"%s"' % echo), not reachable_over,
+              "overflowing: %s" % reachable_over[:1])
+        lines = max(len(_fit(t, echo)[1]) for r, t in _reply_templates() if r)
+        if lines > worst_lines:
+            worst_lines, worst_noun = lines, echo
+
+    check("the device's own echo leaves headroom (%d of %d lines used)"
+          % (worst_lines, budget), worst_lines <= budget - 2,
+          "only %d lines spare" % (budget - worst_lines))
+    print("       worst over all %d nouns: %r at %d of %d lines, %d spare"
+          % (len(vocab.NOUNS), worst_noun, worst_lines, budget,
+             budget - worst_lines))
+
+    # Beyond the device's reach, reported rather than asserted. These are echoes
+    # nothing can produce -- the spotter returns a vocabulary label and nothing
+    # else -- so overflow here is information about the renderer's limits, not a
+    # fault. It is printed because "how far past the real input does this hold"
+    # is worth knowing when someone proposes adding a longer noun.
+    print("       beyond what the device can emit:")
+    for echo in ("my mother always shouts at me",
+                 "your mother and your father again",
+                 "aaaaaaaaaaaa bbbbbbbbbbbb cccccccccccc"):
+        over = [(r, t) for r, t in _reply_templates() if _overflows(t, echo)]
+        print("         %-40s %3d overflow, %d of them reachable"
+              % ('"%s"' % echo[:38], len(over), sum(1 for r, _t in over if r)))
+
     stress = "your mother and your father again"
-    reachable_lines = max(len(_fit(t, stress)[1])
-                          for r, t in _reply_templates() if r)
-    check("at a six-word echo the reachable worst case is 9 lines",
-          reachable_lines == 9, "got %d" % reachable_lines)
-
-    overflowing = sorted(t for r, t in _reply_templates()
-                         if _fit(t, stress)[0] != 2
-                         or len(_fit(t, stress)[1]) > screen._SIZES[0][2])
-    check("exactly one template overflows under stress, and it is the known one",
-          overflowing == ["IS IT IMPORTANT TO YOU THAT 2 3?"],
-          "overflowing: %s" % overflowing)
-    check("the overflowing template is a PHRASE, which bag mode filters out",
-          all(not r for r, t in _reply_templates() if t in overflowing))
-
     longest = max((_rendered(t, stress) for _r, t in _reply_templates()), key=len)
     scale, lines = screen.fit(longest)
     reach = "device-reachable" if any(
@@ -628,6 +660,18 @@ def test_the_reply_renders():
 
 def _fit(text, echo):
     return screen.fit(_rendered(text, echo))
+
+
+def _overflows(text, echo):
+    """True if this template cannot be shown at the large size.
+
+    Dropping to scale 1 *is* the overflow: `fit` falls back rather than
+    truncating, so the line count alone does not say it happened -- a
+    scale-1 fallback reports *fewer* lines, not more, because 23 columns fit
+    more per line. Ask about the scale, not the count.
+    """
+    scale, lines = _fit(text, echo)
+    return scale != screen._SIZES[0][0] or len(lines) > screen._SIZES[0][2]
 
 
 # --- 6. the panel policy ---------------------------------------------------
