@@ -365,7 +365,11 @@ class AudioPIO:
     # engine feeds the PIO on its own, so triggering and returning lets audio and
     # the panel refresh overlap. Call play_finished() before dropping the
     # power amp.
-    def dma_play_words_async(self, buf):
+    def dma_play_words_async(self, buf, count=None):
+        # `count` (32-bit words) overrides len(buf): needed when the clip lives
+        # in a buffer of a different element size -- playback through the int16
+        # capture buffer counts halfwords, and the DMA would play double. Part
+        # of the existing DEVIATION, not vendor code.
         if DMA is None:
             raise RuntimeError("rp2.DMA is not available in this MicroPython firmware")
         if self.dma_tx is None:
@@ -383,7 +387,7 @@ class AudioPIO:
         self.dma_tx.config(
             read=buf,
             write=self.sm_dout,
-            count=len(buf),
+            count=count if count is not None else len(buf),
             ctrl=ctrl,
             trigger=True
         )
