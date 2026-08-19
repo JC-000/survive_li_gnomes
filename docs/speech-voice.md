@@ -428,3 +428,39 @@ stale and the correct split is 12 LITERAL + 16 NOUN = 28.
   it a non-final contour, which is the actual fix. It needs a cut at a precise
   sample boundary — forced alignment, or 33 stems edited by hand — and was not
   attempted.
+
+## Resume here: the 16 kHz corpus (state as of the 2026-08-19 pause)
+
+The playback path is **proven at the desk** — the user judged the repaired
+8 kHz stopgap "acceptable" — so this job is an upgrade with no unknowns in
+front of it, not a rescue.
+
+What exists and is confirmed working on hardware:
+- `listen.speak(i2c, path)`: re-clocks codec+MCLK around a clip, plays through
+  the shared capture buffer, restores 16 kHz capture, never raises. Volume for
+  speech is 82 (90 overdrives; bench-measured twice).
+- `audio_pio_mpy.dma_play_words_async(buf, count=words)` — the count override
+  (without it, an int16 buffer plays double: the static-burst bug).
+- `talk._clip_for(text)`: `say_<sha1(text)[:8]>.pcmw` looked up per reply;
+  no clip = silent panel-only reply, the correct degradation.
+- Six 8 kHz stopgap clips are deployed; replace them.
+
+The job:
+1. **Render every device-reachable template** (~111 plus the noun-echo
+   variants; `tools/voice_audition.py` has the Ava/pbas-42 recipe and
+   `eliza_rules` carries the mood tags — ECHO wants the shorter rise) at
+   **16 kHz**, packed words, peak 15000. Naming: sha1 of the exact rendered
+   text, same as `_clip_for`.
+2. **Stream from flash instead of load-whole-clip.** Flash reads measured at
+   9,320 kB/s against a 64 kB/s draw at 16 kHz. Ping-pong two ~24 KB half
+   buffers inside the existing capture buffer; re-arm the DMA per half. The
+   96 KB whole-clip limit was only ever the stopgap's constraint.
+3. Storage: full corpus at 16 kHz packed is ~57 MB -- TOO BIG even for 15 MB,
+   so streaming alone is not enough: either 4-bit IMA ADPCM at 16 kHz
+   (~7 MB, decoder ~30 viper lines, spec sketch in this doc) or trim to the
+   most-reached templates. DECIDE THIS FIRST; it shapes the render.
+4. Volume/quality gate: one clip A/B'd at the desk before rendering all of
+   them. The user's ear has caught what every meter missed, four times.
+
+Board state at pause: ELIZA deployed and working (TFLM backend, chatty 0.35
+gate), six stopgap clips on flash, firmware `e7b1069a…` (16 MB + TFLM).
