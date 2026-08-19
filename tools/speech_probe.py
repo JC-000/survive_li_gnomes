@@ -688,6 +688,16 @@ def largest_block():
 
 
 rule("f. heap budget (largest contiguous block, not the free total)")
+# Section (g) needs audio, and this section needs the probe's own 48 KB buffer
+# gone to measure the heap honestly. Keep only the 1 s slice (g) analyses,
+# copied out before the free -- deleting the buffer outright made (g) raise
+# NameError into its own broad except, where it printed as a section failure
+# and hid that the quoted turn timings could no longer be reproduced.
+try:
+    _g_words = min(captured_16k, 16000)
+    _g_slice = array("h", memoryview(capture_buf)[:_g_words]) if _g_words else None
+except NameError:
+    _g_slice, _g_words = None, 0
 try:
     del capture_buf  # the probe's own 48 KB, out of the way
 except NameError:
@@ -740,16 +750,17 @@ rule("g. keyword spotter: front end and one DTW")
 try:
     import spotter
 
-    if capture_buf is None or captured_16k == 0:
+    if _g_slice is None or _g_words == 0:
         raise RuntimeError("no capture to analyse")
 
     # A word-length slice of the real capture, so the frame count is realistic.
-    words = min(captured_16k, 16000)  # 1 s
+    # (_g_slice was copied out before section (f) freed the full buffer.)
+    words = _g_words  # <= 1 s
     frames = spotter.frame_count(words)
 
     gc.collect()
     started = time.ticks_us()
-    query, n = spotter.features(capture_buf, 0, words)
+    query, n = spotter.features(_g_slice, 0, words)
     feat_us = time.ticks_diff(time.ticks_us(), started)
     print("front end:  %d ms for %d frames (%.1f ms/frame, %d ms of audio)"
           % (feat_us // 1000, n, feat_us / 1000.0 / max(1, n), words // 16))
