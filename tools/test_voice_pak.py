@@ -620,6 +620,33 @@ def test_the_real_pak_if_one_has_been_built():
            if len(voice_pak.adpcm_decode(blob)) != n]
     check("every blob decodes to the sample count its index claims", not bad,
           "wrong: %r" % bad[:3])
+    # Re-render one clip and demand the same bytes. This is the check that
+    # keeps `src/voice_vectors.py` honest: the vectors are committed and cut
+    # from a pak that is *not*, so they are only valid as long as rendering is
+    # reproducible. `say` is a system binary whose voice data arrives by
+    # software update, and a voice that changed would produce a pak that no
+    # longer matches the committed expectations -- silently, since every
+    # internal consistency check would still pass. One `say` call, and only
+    # when a pak is there to compare against.
+    #
+    # Measured 2026-08-19 on this Mac: byte-identical across runs, and
+    # identical to the packed blob.
+    audition = voice_pak.clip_id(voice_pak.AUDITION)
+    packed = dict((c, b) for c, b, _n in clips)
+    if audition in packed:
+        scratch = tempfile.mkdtemp(prefix="voice-pak-render-")
+        try:
+            samples = voice_pak.render(voice_pak.AUDITION,
+                                       os.path.join(scratch, "again"))
+            check("re-rendering reproduces the packed bytes, so the committed "
+                  "vectors still describe what say produces",
+                  voice_pak.adpcm_encode(samples) == packed[audition],
+                  "the voice or the recipe has changed -- regenerate the pak "
+                  "AND src/voice_vectors.py, and tell whoever owns the device "
+                  "decoder")
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+
     seconds = sum(n for _c, _b, n in clips) / float(rate)
     size = os.path.getsize(path)
     print("       %d clips, %.0f s, %.2f MB" % (len(clips), seconds,
