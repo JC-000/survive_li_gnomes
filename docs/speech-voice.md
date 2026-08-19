@@ -38,6 +38,55 @@ child" — which no number in this file predicts.
 So: **the audition is the deliverable and the ear is the instrument.** The
 recommendation below is a starting position, not a verdict.
 
+## Correction, 2026-08-19: the corpus is 113 clips and 1.89 MB
+
+Everything below about voice, prosody and the seam stands. **The sizing does
+not.** The figures in "The short version", "The seam" and "What fits" are built
+on a corpus of 379 sentences, and that count is wrong for this device by a
+factor of three and a bit.
+
+379 is every reply template in `eliza_rules` crossed with every filler it
+grammatically accepts. The device cannot reach most of them.
+`talk.Conversation.reply` hands the engine a bag of **exactly one** spotted
+word, and `Doctor._answer` returns the *first* keyword rule that produces a
+reply -- so a bag of {MOTHER} is answered by the family rules and the twenty-odd
+other templates that would also accept "mother" are never consulted. That is a
+property of `talk.py`, not of the script, and it is the same fact
+`tools/test_talk.py` already relies on to call PHRASE and MEMORY unreachable.
+
+Enumerated over the rule data taking every branch and every rotation state --
+`tools/voice_pak.py::corpus()`, checked against the engine itself by
+`tools/test_voice_pak.py` -- the device-reachable corpus is:
+
+| | Clips | Seconds | 16 kHz int16 | 16 kHz IMA ADPCM |
+| --- | --- | --- | --- | --- |
+| device-reachable replies | 111 | 244 | 7.45 MB | 1.86 MB |
+| + greeting, + NOTHING\_HEARD | **113** | **248** | **7.56 MB** | **1.89 MB** |
+
+*(measured -- every clip rendered in Ava (Premium) at p3-warm, `say` padding
+trimmed, peak-normalised to 15000, encoded and round-tripped)*
+
+Against the reflashed board's 15 MB filesystem that is **12.6% used, 13.1 MB
+spare**, and the uncompressed corpus would have fitted too. So:
+
+- **The seam question is moot.** Splicing existed to turn 379 clips into 132.
+  There is nothing to save. Every reply is rendered whole, which is the reading
+  the measurement preferred anyway. The seam work is kept below because it is
+  the answer to "can `say` fragments be joined" and that question will come
+  back.
+- **The 8 kHz-versus-vocabulary trade is moot.** Nothing has to be dropped and
+  nothing has to be halved. 16 kHz, full vocabulary, all twelve nouns.
+- **The 3 MB filesystem the whole budget was reasoned against is gone.** The
+  board was reflashed to 16 MB during the same session (firmware `e7b1069a`),
+  which is what makes the margin as wide as it is. Even at the old 3 MB the
+  ADPCM corpus would have fitted with 1.1 MB to spare.
+
+Of the 111, only **68 were observed** in a 30,000-turn interleaved walk over the
+real `talk.Conversation`; the other 43 need a rule-rotation state the walk never
+produced but that nothing in the engine forbids. All 113 ship. A clip nobody
+plays costs ~17 KB of 15 MB; a missing clip is a reply the toy mouths silently,
+and at the desk that is indistinguishable from a decoder bug or a flat battery.
+
 ## The short version
 
 1. **Speaking every reply does not fit, at any audio format.** The full corpus is
@@ -429,7 +478,7 @@ stale and the correct split is 12 LITERAL + 16 NOUN = 28.
   sample boundary — forced alignment, or 33 stems edited by hand — and was not
   attempted.
 
-## Resume here: the 16 kHz corpus (state as of the 2026-08-19 pause)
+## The 16 kHz corpus (built 2026-08-19)
 
 The playback path is **proven at the desk** — the user judged the repaired
 8 kHz stopgap "acceptable" — so this job is an upgrade with no unknowns in
@@ -445,22 +494,57 @@ What exists and is confirmed working on hardware:
   no clip = silent panel-only reply, the correct degradation.
 - Six 8 kHz stopgap clips are deployed; replace them.
 
-The job:
-1. **Render every device-reachable template** (~111 plus the noun-echo
-   variants; `tools/voice_audition.py` has the Ava/pbas-42 recipe and
-   `eliza_rules` carries the mood tags — ECHO wants the shorter rise) at
-   **16 kHz**, packed words, peak 15000. Naming: sha1 of the exact rendered
-   text, same as `_clip_for`.
-2. **Stream from flash instead of load-whole-clip.** Flash reads measured at
-   9,320 kB/s against a 64 kB/s draw at 16 kHz. Ping-pong two ~24 KB half
-   buffers inside the existing capture buffer; re-arm the DMA per half. The
-   96 KB whole-clip limit was only ever the stopgap's constraint.
-3. Storage: full corpus at 16 kHz packed is ~57 MB -- TOO BIG even for 15 MB,
-   so streaming alone is not enough: either 4-bit IMA ADPCM at 16 kHz
-   (~7 MB, decoder ~30 viper lines, spec sketch in this doc) or trim to the
-   most-reached templates. DECIDE THIS FIRST; it shapes the render.
-4. Volume/quality gate: one clip A/B'd at the desk before rendering all of
-   them. The user's ear has caught what every meter missed, four times.
+The job, and where each part stands:
+
+1. **Render every device-reachable template at 16 kHz.** **Done.**
+   `tools/voice_pak.py`, on the Ava (Premium) / p3-warm recipe imported from
+   `tools/voice_audition.py` rather than restated, peak 15000, `say` padding
+   trimmed. 113 clips, 248 s. Ids are `sha1(text)[:8]` and
+   `tools/test_voice_pak.py` proves they are what `_clip_for` looks up by
+   *running* `_clip_for` against files named by the tool, rather than by
+   comparing two strings.
+
+   The mood tags are recorded per clip in `voice_manifest.txt` and are **not**
+   acted on: the audition settled on one prosody for everything and a second
+   recipe is a second thing to A/B at the bench. ECHO replies get the shorter
+   rise for free anyway, because they are two words long and the `[[slnc]]`
+   phrasing rule needs two words either side of the break to fire.
+
+2. **Stream from flash instead of load-whole-clip.** Still required, and the
+   correction above does not change that: the longest clip is
+   "Don't you believe that dream has something to do with your problem?" at
+   **4.48 s**, and the 96 KB shared buffer holds 1.54 s of 16 kHz packed
+   stereo words. Three times over, not marginal. *(measured)*
+
+3. **Storage.** Settled, and the premise was wrong twice over: the corpus is
+   113 clips rather than 379, and the "~57 MB packed" figure counted the 4x
+   expansion to stereo PIO words as though it were stored that way. It is not
+   -- packing to words is what the decoder does on the way out. The pak is
+   **1.89 MB** of 4-bit IMA ADPCM, 12.6% of the filesystem. Nothing is
+   trimmed and nothing drops to 8 kHz.
+
+4. **Volume/quality gate: one clip A/B'd at the desk before the rest are
+   trusted.** Rendered and waiting:
+
+       afplay corpus-voice/audition-pak/wav/ff7a366a.wav
+
+   "Tell me more about your family." -- 2.51 s, median F0 **149.5 Hz** against
+   the 148 Hz this document predicts for Ava at p3-warm, peak 15162, round-trip
+   SNR 30.5 dB. Decoded *through the ADPCM round trip*, deliberately: an
+   audition of the pre-encode render would be an audition of something the
+   device never plays. The same clip and id are in the full pak.
+
+   **Nothing here has been played through the board's speaker.** Per CLAUDE.md
+   that gap is the one that shipped a bug before: `say` exiting 0 proves a file
+   was written and nothing about what a person hears, exactly as an unpowered
+   panel accepts SPI writes.
+
+The container is `voice.pak` -- one file, one upload, seekable, bisected on
+flash without ever being held in RAM. Its layout is normative in
+`tools/voice_pak.py::write_pak` and mirrored in `src/adpcm.py`; the encoder is
+checked against `audioop`, CPython's own IMA implementation, so that agreeing
+with the decoder is evidence about the format rather than about two people
+having made the same mistake.
 
 Board state at pause: ELIZA deployed and working (TFLM backend, chatty 0.35
 gate), six stopgap clips on flash, firmware `e7b1069a…` (16 MB + TFLM).
