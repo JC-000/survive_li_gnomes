@@ -379,6 +379,11 @@ class Conversation:
         renders against this same string, and its `clip_id()` must stay
         byte-identical to what is spelled here.
 
+        The text hashed is what `reply()` returns, i.e. **after** `_present`'s
+        `sentence_case` -- not the upper-case rule text. Hashing the wrong one
+        of those two misses every lookup and raises nothing: the panel keeps
+        showing every reply, and the voice is simply, silently, gone.
+
         Two places are consulted, in order:
 
         1. `voice.pak` -- the 16 kHz corpus, looked up by a binary search over

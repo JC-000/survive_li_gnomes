@@ -246,9 +246,17 @@ def decode_into(src, src_off, nib_count, out, out_off, state):
 # the ids are 8 ascii characters rather than 4 packed bytes: `talk._clip_for`
 # already has the id in that form and can compare it without parsing. At 113
 # clips a lookup is ~7 reads of 20 bytes; flash reads at 9,320 kB/s
-# (docs/hardware.md), so it costs microseconds and no heap at all. A dict would
-# have been tens of KB on a board where `talk.reserve()` already bisects the
-# heap to place three blocks.
+# (docs/hardware.md), so it costs microseconds and no heap at all.
+#
+# **Do not "optimise" this into a dict read once at bind.** That is the obvious
+# cleanup, it is what this file's author proposed first, and it is wrong here:
+# a dict of 113 entries is tens of KB of small objects on a heap that never
+# compacts and that `talk.reserve()` already carves by hand to place three
+# blocks. The cost it would save is microseconds per press. The encoder's
+# author chose the flash bisect and was right; the format is theirs
+# (`tools/voice_pak.py` is normative) and this is a port of it, not a design.
+# The same heap has already eaten the activation chirp twice and the TFLM
+# arena once -- see the reservation ordering in `talk.reserve()`.
 
 MAGIC = b"VPAK"
 HEADER_LEN = 16

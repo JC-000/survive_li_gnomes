@@ -153,6 +153,28 @@ if [ "$PROGRAM" = "eliza" ] || [ "$PROGRAM" = "talk" ]; then
     if [ -f "$VOICE_PAK" ]; then
         echo "  -> voice.pak ($(du -h "$VOICE_PAK" | cut -f1)) - this one is slow"
         uvx --quiet mpremote connect "$PORT" cp "$VOICE_PAK" ":voice.pak"
+        # Verify the transfer, because a truncated pak fails in the worst way:
+        # the header still parses, the index still bisects, and the first clip
+        # past the truncation point dies mid-reply at the desk. sha256 of the
+        # on-device bytes against the local file; the device-side hash costs a
+        # couple of seconds for ~2 MB and has already caught one mid-copy
+        # death today (a different file, same mechanism).
+        want=$(shasum -a 256 "$VOICE_PAK" | cut -c1-64)
+        got=$(uvx --quiet mpremote connect "$PORT" exec "
+import hashlib, binascii
+h = hashlib.sha256()
+buf = bytearray(4096)
+with open('voice.pak', 'rb') as f:
+    while True:
+        n = f.readinto(buf)
+        if not n: break
+        h.update(memoryview(buf)[:n])
+print(binascii.hexlify(h.digest()).decode())" | tr -d '\r\n ')
+        if [ "$want" != "$got" ]; then
+            echo "  !! voice.pak VERIFY FAILED (host $want, device $got)" >&2
+            exit 3
+        fi
+        echo "     verified: $got"
     else
         echo "  !! $VOICE_PAK missing - the replies will be silent (panel only)"
         echo "     Build it with: uv run tools/voice_pak.py corpus-voice/"

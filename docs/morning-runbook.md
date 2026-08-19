@@ -372,6 +372,33 @@ Skip the `ava_*.pcmw` audition clips; they were dropped deliberately.
 `templates.bin` will warn and that is the known state — no enrolment has ever
 been completed.
 
+### `voice.pak` is the one upload nothing verifies
+
+1.9 MB over `mpremote cp`, and **nothing downstream would notice a truncated
+transfer**. A short pak still has a valid header, `Pak.open()` still reports the
+right clip count and rate (both live in the first 16 bytes), and the index still
+bisects — so the boot line `voice.pak bound (113 clips, 16000 Hz)` prints
+exactly as it does on a good upload. The first clip whose blob starts past the
+cut is the one that fails, mid-reply, and it presents as a decoder bug.
+
+So check it by hand after a deploy, at least when the voice misbehaves:
+
+```sh
+uvx mpremote connect $PORT cp :voice.pak /tmp/voice.pak.readback
+shasum -a 256 /tmp/voice.pak.readback corpus-voice/voice.pak
+```
+
+Both lines must show the same digest. For the 2026-08-19 corpus that is
+`2b4bf8a5b3165e86609a8fb950f4497eefd8c5b8d7b0f8e0dac3a8d3be8197fe`.
+
+***Unverified** — written from the format, not run. It has not been executed
+against a board, and `mpremote cp` off the device is the part to distrust. Run
+it once when the board is free, then either fix it or wire it into
+`tools/deploy.sh`.* Deliberately a recipe here rather than a step in
+`deploy.sh`: an unrun verification step inside the deploy would either be
+silently skipped or fail every deploy, and a check that claims to verify
+without having verified anything is the failure `CLAUDE.md` opens with.
+
 ### Then leave the board in the friendly REPL, not the raw one
 
 **This cost an hour on 2026-08-18.** `mpremote exec` and `mpremote run` drive
@@ -394,15 +421,29 @@ failing to reach the device. The board is fine and nothing will tell you so:
 lsof /dev/cu.usbmodem1401
 ```
 
-Kill whatever it names, then retry.
+**Identify what it names before killing it.** Not "kill whatever holds the
+port" — that rule is wrong and cost a near-miss on 2026-08-19.
 
-**The commonest thing it names is one of ours.** `uvx --from pyserial python -`
-fed by a heredoc *orphans* under this shell: the parent returns, the child is
-reparented to PID 1, and it sits forever reading a stdin that will never
-arrive — holding the tty the whole time. It happened three times on
-2026-08-19. `ps -o ppid= -p <pid>` returning `1` for a `python -` is the
-signature, and such a process cannot make progress, so killing it costs
-nothing. Write the script to a file and `python thatfile.py` instead; the
+**The commonest thing it names is one of ours**, and there are two kinds that
+look *identical* in `lsof` and `ps`:
+
+- **A stuck orphan.** `uvx --from pyserial python -` fed by a heredoc orphans
+  under this shell: the parent returns, the child is reparented to PID 1, and
+  it sits forever on a stdin that will never arrive. It cannot make progress,
+  so killing it costs nothing. Three of these on 2026-08-19.
+- **A deliberate read-only tap.** Someone monitoring a live user session:
+  pyserial reading the port into a log so every turn is visible. Also
+  `python -`, also reparented to 1, also with a closed stdin — because its work
+  is the read loop, not the stdin. Killing it destroys someone's session
+  record and blinds them mid-run.
+
+`ps -o ppid= -p <pid>` returning `1` therefore proves nothing either way. **Ask
+before killing** if a session might be in progress. The tell that separates them
+after the fact: once the port is free, a board that answers *immediately with no
+reset* was never hung, so whatever held it was doing no harm.
+
+Avoid creating the first kind at all: write the script to a file and
+`python thatfile.py` rather than piping a heredoc into `python -`. The
 scratchpad is the place for it. On the morning this was written the board
 answered `alive` immediately afterwards **with no reset at all** — which is the
 proof it had never hung, since a hung program would still have been hung.
