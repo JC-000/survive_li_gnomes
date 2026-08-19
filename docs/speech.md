@@ -1109,7 +1109,7 @@ should.
 
 This is the same run behind the "spans of 520 ms and 1800 ms off actual
 utterances" line in `1bca7f5`, which dates it: **it predates the chirp-settle
-fix (`2876682`) and the `MIC_GAIN` 3 → 1 change (`f2bc58e`)**, so the capture
+fix (`12a942e`) and the `MIC_GAIN` 3 → 1 change (`61967bc`)**, so the capture
 path as it stands today has not been through it. And `heard -` on both turns is
 not a rejection — there were no templates on the device, and there still are
 none. **No reply beyond a deflection has ever been spoken to this program.**

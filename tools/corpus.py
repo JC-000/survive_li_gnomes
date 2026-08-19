@@ -57,6 +57,9 @@ HUMAN_SPLIT = "human"
 # MIC_GAIN 3. None of them may ever be trained on, so they all load under the
 # `human` split and none is reachable from `split_for_training`.
 DEFAULT_TAKES = "takes,takes-oov"
+# The -contaminated and -clipped variants stay listed although the recordings
+# themselves were destroyed at the user's request (voice data, purpose spent):
+# anything recreating those names must still be caught by the no-training rule.
 HUMAN_DIRS = ("takes", "takes-oov", "takes-contaminated", "takes-clipped",
               "takes-oov-contaminated", "takes-oov-clipped")
 
