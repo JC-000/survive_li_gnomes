@@ -91,17 +91,27 @@ TFLM_ARENA_BYTES = 64 * 1024
 
 # Which runtime `bind()` reaches for first.
 #
-# **TinyMaix, until the A/B says otherwise.** TFLM is bit-exact with host TFLite
-# and TinyMaix is not, which is a strong argument and not yet a measurement on
-# this board -- and the shipped operating point (THRESHOLD/MARGIN/TIE_FLOOR
-# below) was tuned against TinyMaix, on the device. Swapping the runtime under
-# constants tuned for the other one is the exact mistake docs/speech.md is
-# built around, so the swap waits for numbers.
+# **TFLM, since 2026-08-19, when the numbers this line used to wait for
+# arrived.** On this board, all 30 comparison cases came back byte-identical to
+# host TFLM, worst count 0, confirmed by two independently written chains
+# (`tools/check_tflm_device.py` exit 0, `tools/tflm_compare_cases.py` exit 0).
+# TinyMaix, run in the same session on the same inputs, disagreed with the host
+# on top-1 in 5 of the 30 -- the 3 `kw_unknown` patches already on record and,
+# newly, two real recordings (`problem_01`, `wonder_01`), worst deviation 190
+# counts against a MARGIN measured in single counts. So the argument for TFLM
+# stopped being an argument.
 #
-# `bind(backend="tflm")` forces the other side for the comparison. With
-# BACKEND_DEFAULT unchanged, a board carrying both runs TinyMaix, and a board
-# carrying only TFLM falls through to it rather than going silent.
-BACKEND_DEFAULT = "tinymaix"
+# It costs inference time: 245.6 ms against TinyMaix's 66.6 ms, measured in that
+# same session, which takes a turn from ~940 ms to ~1120 ms. Bought deliberately
+# -- it is what makes a host-measured operating point mean anything here.
+#
+# **THRESHOLD/MARGIN/TIE_FLOOR below are still the TinyMaix-tuned values**, and
+# that is a real loose end rather than an oversight; see the note above them.
+#
+# `bind(backend="tinymaix")` forces the incumbent, which is how the two get
+# compared. A board carrying only one of them falls through to it rather than
+# going silent.
+BACKEND_DEFAULT = "tflm"
 
 UNKNOWN = "unknown"
 CLASSES = (tuple(vocab.LABELS) + (UNKNOWN,)) if vocab is not None else ()
@@ -153,7 +163,43 @@ UNKNOWN_INDEX = len(CLASSES) - 1
 # toy whose failure mode is a deflection; it is not enough to quote as an
 # accuracy figure, and the honest next step is more negatives rather than more
 # tuning. `docs/cnn-on-device.md` records the full table.
+# ## These are TinyMaix's numbers, and the runtime under them changed
+#
+# **Open, as of 2026-08-19.** Everything above was measured through TinyMaix.
+# The default runtime is now TFLM, which computes genuinely different
+# probabilities from the same weights -- that is the whole finding, not a
+# rounding difference.
+#
+# What the switch actually does to this gate is *measured*, from the 22 real
+# takes in the device capture that proved the byte-exactness:
+#
+#     THRESHOLD 0.35   ->  8 of 22 takes fire
+#     THRESHOLD 0.637  ->  2 of 22 takes fire
+#
+# 0.637 is si-model's host sweep under the reference kernels (precision 1.000,
+# recall 0.300, docs/speaker-independent.md), and it now transfers to the device
+# by construction. It is not installed here yet, because installing it would be
+# the third distinct operating point in this file's history and the first one
+# nobody has run a turn against. Note also that `father_01`, a correct fire,
+# lands at 163/256 = 0.6367 -- one quantisation step *below* a literal 0.637,
+# so at that setting the rounding of the constant decides the answer.
+#
+# Resolved 2026-08-19, on the quantisation grid rather than in decimal. The
+# sweep's 0.637 *meant* "one count above the worst negative": the worst
+# negative under reference kernels is `problem` scoring brother at exactly
+# 160/256 = 0.625, and the blessed decimal, taken literally, also excludes
+# `father_01` at 163/256 = 0.63672 -- a correct fire deleted by rounding. So
+# the TFLM floor is written as the count it is: 161/256, strictly above every
+# stay-silent score in the reference capture, at-or-below every correct fire
+# the sweep kept. Same operating point the sweep blessed (precision 1.000,
+# recall 0.300 on the 22 stored takes), minus the rounding bug. Scores here
+# ARE grid points -- both runtimes dequantise int8 at 1/256 -- which is why a
+# threshold expressed off-grid was a latent coin-flip.
+#
+# Each backend carries its own floor and bind() selects it; TinyMaix's live-
+# tuned 0.35 is untouched for the fallback path.
 THRESHOLD = 0.35        # top-1 probability floor  -- costs nothing on this set
+THRESHOLD_BY_BACKEND = {"tinymaix": THRESHOLD, "tflm": 161.0 / 256.0}
 MARGIN = 2.0 / 256.0    # top-1 minus top-2, two output quantisation steps
 
 # An exact tie is forgiven, but only above this probability. Third tuned
@@ -306,6 +352,7 @@ class Spotter:
         self.n_classes = 0
         self.error = None
         self.backend = None
+        self.threshold = THRESHOLD
 
     @property
     def available(self):
@@ -352,6 +399,7 @@ class Spotter:
             self.model = factory(path if path is not None
                                  else factory.default_path)
             self.backend = factory.name
+            self.threshold = THRESHOLD_BY_BACKEND.get(factory.name, THRESHOLD)
             self.n_classes = self.model.n_classes
             if self.n_classes != len(CLASSES):
                 # Loud, and at load rather than at the first reply. A model with
@@ -414,7 +462,7 @@ class Spotter:
         margin = top - second
 
         label = None
-        if best != UNKNOWN_INDEX and top >= THRESHOLD:
+        if best != UNKNOWN_INDEX and top >= self.threshold:
             # Monotone in `margin` by construction: the floor covers the whole
             # sub-MARGIN band rather than only the exact-tie point at its
             # bottom. An earlier version tested `margin == 0.0` here and left a

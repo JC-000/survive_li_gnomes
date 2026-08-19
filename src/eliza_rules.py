@@ -34,6 +34,16 @@ unfinished, and the short ones read as broken.
 ECHO is separate from QUESTION because it is the case that reads as a
 fragment -- "YOUR 4", "REALLY, 2" -- and because spoken it wants a
 shorter, higher rise than a full question. Control forms carry None.
+
+**Filter by kind before reading payload.** Every template is a 3-tuple,
+but payload is a string only for the reply kinds: NEWKEY carries None
+and PRE carries a (rewrite, keyword) pair. A loop that unpacks three
+values and uses the third gets an arity that looks right and a value
+that is not text.
+
+MEMORY and NONE are separate module-level tuples, not part of RULES. A
+sweep that walks RULES alone silently misses them, which has already
+produced two different answers to the same measurement twice.
 """
 
 CANNED = "C"

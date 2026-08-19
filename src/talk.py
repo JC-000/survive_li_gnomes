@@ -522,7 +522,12 @@ def reserve():
     if si_spot is not None:
         _si = si_spot.Spotter()
         if _si.bind(buffers=si_patch_buffers()):
-            print("cnn spotter ready (%d classes)" % _si.n_classes)
+            # The backend is named on purpose: two runtimes can serve this
+            # program, they compute measurably different probabilities from the
+            # same weights, and "which one is this board running" was an
+            # inference at a bench once. Once was enough.
+            print("cnn spotter ready (%d classes, %s)"
+                  % (_si.n_classes, _si.backend))
         else:
             print("cnn spotter unavailable (%s)" % _si.error)
 

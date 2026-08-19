@@ -497,6 +497,57 @@ def _rendered(text, echo):
     return eliza.sentence_case(re.sub(r"\b\d\b", echo, text))
 
 
+def test_the_corpus_is_complete():
+    """The overflow assertions are only as good as the corpus they sweep.
+
+    `MEMORY` and `NONE` are separate module-level tuples, not part of `RULES`,
+    so a sweep that walks `RULES` alone silently omits them and still reports a
+    plausible number. That is the same shape as the phantom 202 -- a count that
+    looked right and was measuring the wrong set. Asserted here rather than
+    assumed, because "nothing overflows" over an incomplete corpus is a sound
+    claim about nothing in particular.
+    """
+    print("corpus completeness")
+    swept = [text for _reachable, text in _reply_templates()]
+    for text in eliza_rules.NONE:
+        check("NONE entry in the sweep: %s" % text[:28], text in swept)
+    memory = [entry[2] for entry in eliza_rules.MEMORY]
+    missing = [t for t in memory if t not in swept]
+    check("every MEMORY template in the sweep (%d)" % len(memory), not missing,
+          "missing: %s" % missing)
+
+    kinds = {}
+    for _rank, _sub, decomps in eliza_rules.RULES.values():
+        for _pattern, templates in decomps:
+            for kind, _mood, _payload in templates:
+                kinds[kind] = kinds.get(kind, 0) + 1
+    expected = (sum(kinds.get(k, 0) for k in eliza_rules.SPOTTABLE)
+                + kinds.get(eliza_rules.PHRASE, 0)
+                + len(eliza_rules.NONE) + len(memory))
+    check("the sweep is %d templates, matching the rule data" % expected,
+          len(swept) == expected, "swept %d" % len(swept))
+
+
+def test_unreachability_is_a_property_of_talk():
+    """PHRASE and MEMORY are unreachable *because talk.py never asks for them*.
+
+    That is a fact about this program, not about the rule data: MEMORY only
+    fills on the ordered path, and the ordered path is `respond`, which nothing
+    here calls. The moment anything does, both become live and the panel budget
+    changes -- so the budget test's "unreachable" grouping rests on this, and
+    this is where it is pinned.
+    """
+    print("unreachability: pinned to the reason, not the data")
+    import inspect
+
+    source = inspect.getsource(talk.Conversation)
+    check("Conversation uses respond_to_keywords",
+          "respond_to_keywords" in source)
+    check("Conversation never calls the ordered path",
+          ".respond(" not in source,
+          "found a call to respond(), which makes PHRASE and MEMORY reachable")
+
+
 def test_the_reply_renders():
     """The panel budget, at the echo width the device actually produces.
 
@@ -533,13 +584,23 @@ def test_the_reply_renders():
                                           overflow_reachable[:1]))
 
     # The stress case is where it gets tight, and where the only overflow lives
-    # in templates bag mode filters out. Pinned so that ceasing to be true --
-    # a PHRASE template becoming reachable, say -- fails here.
+    # in templates bag mode filters out. Named rather than counted: a corpus
+    # that quietly lost a member would otherwise reach the right total for the
+    # wrong reason, which is how the phantom 202 survived as long as it did.
     stress = "your mother and your father again"
     reachable_lines = max(len(_fit(t, stress)[1])
                           for r, t in _reply_templates() if r)
     check("at a six-word echo the reachable worst case is 9 lines",
           reachable_lines == 9, "got %d" % reachable_lines)
+
+    overflowing = sorted(t for r, t in _reply_templates()
+                         if _fit(t, stress)[0] != 2
+                         or len(_fit(t, stress)[1]) > screen._SIZES[0][2])
+    check("exactly one template overflows under stress, and it is the known one",
+          overflowing == ["IS IT IMPORTANT TO YOU THAT 2 3?"],
+          "overflowing: %s" % overflowing)
+    check("the overflowing template is a PHRASE, which bag mode filters out",
+          all(not r for r, t in _reply_templates() if t in overflowing))
 
     longest = max((_rendered(t, stress) for _r, t in _reply_templates()), key=len)
     scale, lines = screen.fit(longest)
@@ -597,6 +658,8 @@ def main():
     test_a_rejection_reaches_the_no_keyword_path()
     test_degraded_paths()
     test_allocation_order()
+    test_the_corpus_is_complete()
+    test_unreachability_is_a_property_of_talk()
     test_the_reply_renders()
     test_panel_refresh_policy()
     print()

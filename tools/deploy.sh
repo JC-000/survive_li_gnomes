@@ -40,6 +40,18 @@ TEMPLATE_BLOB="src/templates.bin"
 # Measured through this exact path on 10 real takes and 12 real negatives:
 # precision 1.000, recall 0.600. See docs/cnn-on-device.md.
 CNN_MODEL="${CNN_MODEL:-models/si_real.tmdl}"
+
+# The same network as a `.tflite`, for the TFLM runtime, which since
+# 2026-08-19 is `si_spot.BACKEND_DEFAULT`. Both ship: TFLM reads this one,
+# TinyMaix reads the `.tmdl` above, and either can be forced with
+# `bind(backend=...)`.
+#
+# Shipping only the `.tmdl` is not a degraded spotter, it is no spotter --
+# `_Tflm` opens `si_model.tflite` and an absent file surfaces at boot as
+# `cnn spotter unavailable (OSError: [Errno 2] ENOENT)`, after which every
+# turn deflects. Found exactly that way, on the board, minutes after the
+# default was flipped.
+CNN_MODEL_TFLM="${CNN_MODEL_TFLM:-models/si_real.tflite}"
 CNN_MODULE="${CNN_MODULE:-vendor/emlearn_cnn_int8.mpy}"
 
 SHARED="board epaper es8311 audio_pio_mpy magic8"
@@ -152,6 +164,16 @@ if [ "$PROGRAM" = "eliza" ] || [ "$PROGRAM" = "talk" ]; then
         fi
     else
         echo "  !! $CNN_MODEL missing - no CNN spotter; every turn deflects"
+    fi
+
+    if [ -f "$CNN_MODEL_TFLM" ]; then
+        echo "  -> si_model.tflite (from $CNN_MODEL_TFLM)"
+        uvx --quiet mpremote connect "$PORT" cp "$CNN_MODEL_TFLM" ":si_model.tflite"
+    else
+        echo "  !! $CNN_MODEL_TFLM missing - the default TFLM backend has no"
+        echo "     model and si_spot falls back to TinyMaix, which computes"
+        echo "     different probabilities from the same weights. See"
+        echo "     docs/tflm-usermod.md."
     fi
 fi
 
