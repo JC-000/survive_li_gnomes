@@ -53,19 +53,29 @@ Confirm the images are the ones this document means:
 | `firmware/WAVESHARE_RP2350_TOUCH_EPAPER_154-v1.28.0-16MB.uf2` | `aeea05f47a60af1f3de75fd4649aaf53930905559ec808f5a0efdf849d40417e` |
 | `firmware/RPI_PICO2-20260406-v1.28.0.uf2` | `e65ad62ae886a4f56da8ef2c07904fe504b92de69e5ae6489acf881bcf30b6ae` |
 
-There is also a **stripped** variant — same build with TFLM's diagnostic
-strings compiled out, 49,268 bytes smaller:
+A **stripped** variant exists — the same build with TFLM's diagnostic strings
+compiled out, 49,268 bytes smaller, 815,616 B,
+sha256 `d43152045c953f01343936d37e7c8dde9b35667fd261e565cc245b012628b837`.
+It is verified for this board and it is deliberately **not** in `firmware/`:
 
-| file | sha256 |
-| --- | --- |
-| `firmware/WAVESHARE_RP2350_TOUCH_EPAPER_154-v1.28.0-16MB-tflm-strip.uf2` | `d43152045c953f01343936d37e7c8dde9b35667fd261e565cc245b012628b837` |
+```sh
+EXTRA_CMAKE_ARGS=-DTFLM_STRIP_ERROR_STRINGS=1 \
+USER_C_MODULES=firmware/usermod/tflm/micropython.cmake \
+BUILD_DIR=build/mpy-16mb-tflm-strip OUT=build/mpy-16mb-tflm-strip.uf2 \
+./tools/build_firmware.sh
+```
 
-Verified for this board (`pico_board: waveshare_rp2350_touch_epaper_154`,
-`embedded drive 0x10100000-0x11000000`), but **it is not the one to flash this
-morning**. During bring-up, "Failed to allocate tail memory. Requested: 816,
-available 8" is the difference between a diagnosis and a guess, and 49 KB out
-of 581 KB of headroom buys nothing today. Strip it once the arena is sized and
-the model is settled.
+`firmware/` holds exactly the three images this runbook flashes — the target
+and the two rollback rungs — because a fourth one whose name differs from the
+target by `-strip` is something a tired hand tab-completes into at 9am, and the
+cost of that mistake is losing the diagnostics precisely when diagnosing. It
+rebuilds in six minutes and reproduces the hash above exactly.
+
+It should not be the first flash regardless: "Failed to allocate tail memory.
+Requested: 816, available 8" is the difference between a diagnosis and a guess
+— it is what identified a 40 KB-arena mistake in one line during development —
+and 49 KB out of 581 KB of headroom buys nothing today. Strip it once the arena
+is sized and the model has settled.
 
 All the `firmware/*.uf2` files are gitignored. If the combined one is missing,
 rebuild it — about six minutes:

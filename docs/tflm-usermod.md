@@ -229,8 +229,16 @@ handed the compiler via `-I`, which cmake normalises. The default `TFLM_DIR` was
 `.../usermod/tflm/../../../vendor/tflm`, so the flag appeared on every compile
 line, matched nothing, and the paths stayed in the image — a build log that says
 the fix is applied and a binary that says it is not. `get_filename_component(...
-ABSOLUTE)` first; verify with `strings firmware.elf | grep vendor/tflm`, which
-is now 0 where it was 19. Worth 944 bytes, and the reproducibility.
+ABSOLUTE)` first. Worth 944 bytes, and the reproducibility.
+
+**And `strings firmware.elf | grep vendor/tflm` is necessary but not
+sufficient** — it says the paths are gone, not that the *binary* stopped
+depending on where the tree sits, and those are different claims. The check
+that separates them is to stage the whole tree in a different directory, build
+it there, and compare: fw-16mb did that and got a **byte-identical image**,
+same `e7b1069a…`. That is the check the first attempt would have failed, and
+it is the one to run when this is ever touched again. The grep is 0 where it
+was 19, and on its own it would have been 0 for the wrong reason.
 
 The stripped image is byte-identical before and after that fix, which confirms
 fw-16mb's diagnosis that the paths arrive with the diagnostics.
