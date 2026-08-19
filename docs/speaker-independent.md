@@ -40,6 +40,16 @@ unknown. It worked, on the one speaker it has been tried on.
 > **The CNN rows were measured on the `.tflite`, not on what the board runs.**
 > The device executes a `.tmdl` through TinyMaix, an independent
 > reimplementation whose arithmetic differs: top-1 disagreed on **3 of 8**
+
+> **A caveat on "host TFLite" as a reference, measured later** (see
+> [tflm-usermod.md](tflm-usermod.md)): `tf.lite.Interpreter` is three runtimes
+> that disagree among themselves -- XNNPACK (the default), optimised CPU, and
+> the reference kernels differ by up to 8 of 256 output counts on these same
+> cases, with only the reference kernels bit-identical to TFLM. Every top-1 in
+> those comparisons agrees across all three, so the TinyMaix finding stands,
+> but the *size* of its divergence was measured against a reference with up to
+> 8 counts of movement of its own. Comparisons that need exactness must name
+> the kernel set, not just "TFLite".
 > patches. DTW is untouched by this, so the CNN-against-DTW rows are not
 > like-for-like and the CNN's 0.500 is provisional against them. What survives
 > is that DTW has **no** usable threshold in any configuration, which nothing on

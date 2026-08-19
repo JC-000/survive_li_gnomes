@@ -18,6 +18,16 @@ model and the corpus; this file owns the runtime.
 > and its int32 bound at the algebraic worst case; the scratch-buffer overrun,
 > with a control; that `bytearray` is rejected as model input; and that the
 > device disagrees with host TFLite on 3 of 8 keyword patches.
+
+> **A caveat on "host TFLite" as a reference, measured later** (see
+> [tflm-usermod.md](tflm-usermod.md)): `tf.lite.Interpreter` is three runtimes
+> that disagree among themselves -- XNNPACK (the default), optimised CPU, and
+> the reference kernels differ by up to 8 of 256 output counts on these same
+> cases, with only the reference kernels bit-identical to TFLM. Every top-1 in
+> those comparisons agrees across all three, so the TinyMaix finding stands,
+> but the *size* of its divergence was measured against a reference with up to
+> 8 counts of movement of its own. Comparisons that need exactness must name
+> the kernel set, not just "TFLite".
 >
 > **Updated 2026-08-18 (second session):** the CNN is now wired into `talk.py`
 > and a full turn has run on the glass. The operating point has been measured
