@@ -307,7 +307,13 @@ audible — if it does not, there is more room than assumed.
 
 ## The seam
 
-The comparison that decides the storage budget, and the one result nobody can
+> **Moot for sizing — see [the correction](#correction-2026-08-19-the-corpus-is-113-clips-and-189-mb).**
+> Splicing existed to turn 379 clips into 132; the corpus is 113 and every
+> reply ships rendered whole, which is the reading this measurement preferred
+> anyway. Kept because it is the answer to "can `say` fragments be joined",
+> and that question will come back.
+
+The comparison that decided the storage budget, and the one result nobody can
 reconstruct from this document without redoing the work.
 
 A slotted template like "WHY DO YOU REMEMBER _ JUST NOW" can either be **rendered
@@ -404,6 +410,13 @@ curve below is moot. If it does not, nothing rescues the full corpus and the
 curve is the answer: ship fewer nouns and let the rest deflect.
 
 ## What fits
+
+> **Superseded — see [the correction](#correction-2026-08-19-the-corpus-is-113-clips-and-189-mb).**
+> Every figure in this section is for a 379-sentence corpus against a 3 MB
+> filesystem. The device reaches 113 of those replies and the part is now
+> 16 MB, so nothing has to be truncated and the curve below decides nothing.
+> Kept because the per-format byte rates and the fall-through-to-a-deflection
+> argument are both still good.
 
 Measured on the full corpus rendered in Ava (Premium) at p3-warm, `say` padding
 trimmed. Sizes are 4-bit IMA ADPCM, the only format anything fits in.
