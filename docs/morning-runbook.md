@@ -58,17 +58,16 @@ strings compiled out, 49,268 bytes smaller:
 
 | file | sha256 |
 | --- | --- |
-| `build/mpy-16mb-tflm-strip.uf2` | `d43152045c953f01343936d37e7c8dde9b35667fd261e565cc245b012628b837` |
+| `firmware/WAVESHARE_RP2350_TOUCH_EPAPER_154-v1.28.0-16MB-tflm-strip.uf2` | `d43152045c953f01343936d37e7c8dde9b35667fd261e565cc245b012628b837` |
 
 Verified for this board (`pico_board: waveshare_rp2350_touch_epaper_154`,
 `embedded drive 0x10100000-0x11000000`), but **it is not the one to flash this
 morning**. During bring-up, "Failed to allocate tail memory. Requested: 816,
 available 8" is the difference between a diagnosis and a guess, and 49 KB out
 of 581 KB of headroom buys nothing today. Strip it once the arena is sized and
-the model is settled. Note it lives in `build/`, which is disposable — if it
-matters, move it to `firmware/` and give it a name.
+the model is settled.
 
-Both `firmware/*.uf2` files are gitignored. If the combined one is missing,
+All the `firmware/*.uf2` files are gitignored. If the combined one is missing,
 rebuild it — about six minutes:
 
 ```sh
@@ -77,6 +76,17 @@ BUILD_DIR=build/mpy-16mb-tflm \
 OUT=firmware/WAVESHARE_RP2350_TOUCH_EPAPER_154-v1.28.0-16MB-tflm.uf2 \
 ./tools/build_firmware.sh
 ```
+
+**A rebuild reproduces the hash above exactly**, so a mismatch means something
+really did change rather than "builds differ, they always do". That is true
+because of a fix made the same night: TFLM's assertion macros were baking
+`__FILE__` into the image, 19 absolute host paths and 2,133 bytes of them,
+which made the binary depend on where the repo sat on disk. `-ffile-prefix-map`
+on `tflm_lib` removed them. Checked rather than assumed — the whole tree was
+built a second time from a different directory, and the two images are
+byte-identical. Add `EXTRA_CMAKE_ARGS=-DTFLM_STRIP_ERROR_STRINGS=1` for the
+stripped variant, whose bytes the path fix does not change at all, because the
+paths only ever existed inside the diagnostics that variant compiles out.
 
 ## 1. Find the port by UID, do not assume it
 
@@ -290,6 +300,19 @@ redraw regardless.
 
 Only if fw-tflm has the swap path ready. Otherwise it is the next session's
 work, and the runbook ends at 4d.
+
+**Do not use the recorded 0.598 threshold for it.** That number was measured
+through XNNPACK, and the board computes reference kernels; on the same 22 takes
+with the same scorer, reference kernels need **0.637 for precision 1.000, and
+recall falls to 0.300**. Top-1 is 0.700 under all three host runtimes, so this
+is a threshold moving, not a model changing.
+
+The retune is host-side work and it is si-model's: they hold the reference-kernel
+dump and run the sweep. **The A/B uses whatever threshold that sweep blesses**,
+not the constant currently in the tree. If the sweep has not landed by the time
+you reach this step, run 4a–4d, report them, and leave 4e — an A/B against a
+threshold known to be measured on the wrong kernels would produce a number
+somebody would later have to unpublish.
 
 ## 5. Rollback ladder
 
