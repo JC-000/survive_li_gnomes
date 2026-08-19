@@ -397,6 +397,10 @@ def test_contract_constants():
     # src/listen.py and tools/enrol.py, and enforced nowhere -- record_stream
     # passes an explicit max_samples, so nothing on the device stops the two
     # drifting apart. This is the enforcement.
+    # Before loading listen.py, not after: it imports `adpcm` at module level
+    # for the voice, and `_load` deliberately does not register what it loads in
+    # sys.modules, so the plain import has to be able to find it on the path.
+    sys.path.insert(0, os.path.join(ROOT, "src"))
     real_listen = _load("real_listen", os.path.join(ROOT, "src", "listen.py"))
     enrol = _load("host_enrol", os.path.join(ROOT, "tools", "enrol.py"))
     runtime_s = real_listen.MAX_RECORD_MS / 1000.0

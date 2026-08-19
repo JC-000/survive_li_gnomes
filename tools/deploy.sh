@@ -31,6 +31,11 @@ cd "$(dirname "$0")/.."
 # path looking merely like a shy recogniser.
 TEMPLATE_BLOB="src/templates.bin"
 
+# The rendered voice corpus, built by tools/voice_pak.py into a gitignored
+# corpus*/ directory -- so it does not survive a fresh clone and is regenerated
+# rather than committed, exactly like the audition audio it comes from.
+VOICE_PAK="${VOICE_PAK:-corpus-voice/voice.pak}"
+
 # The CNN spotter's two data files. `si_real` is the model that ships: it is the
 # one trained on the real-speaker corpus, and its classes are the family nouns
 # (mother, father, wife) that ELIZA gets the most out of echoing. `si_am` covers
@@ -83,7 +88,15 @@ case "$PROGRAM" in
         # board that is merely deployed, without mounting src/. That check is
         # the only one the host suite cannot do, and it wants to be available
         # after a firmware change, not only at the bench.
-        MODULES="$SHARED listen vad screen record_stream vocab eliza eliza_rules speech_tables spotter speech_fixtures templates si_patch si_spot"
+        #
+        # `adpcm` is NOT optional, unlike everything else added to this list
+        # recently: listen.py imports it at module level for the voice, so a
+        # board without it does not lose the voice, it fails to boot.
+        # `voice_vectors` and `voice_fixtures` are diagnostics in the same
+        # sense `speech_fixtures` is -- nothing in the program imports them,
+        # and they ship so tools/voice_probe.py section (a) can prove the
+        # decoder bit-identical on a merely-deployed board.
+        MODULES="$SHARED listen adpcm vad screen record_stream vocab eliza eliza_rules speech_tables spotter speech_fixtures voice_vectors voice_fixtures templates si_patch si_spot"
         ENTRY="src/talk.py"
         CLIPS=0
         READY="Hold the screen or POWER, speak, then let go."
@@ -131,6 +144,18 @@ if [ "$PROGRAM" = "eliza" ] || [ "$PROGRAM" = "talk" ]; then
         echo "     For the FIRST run on hardware use --pack full: it needs no"
         echo "     on-device expansion pass, so a recogniser that misbehaves has"
         echo "     one fewer untested cause. Same RAM, 140 KB of flash not 70."
+    fi
+
+    # The voice. ~1.9 MB of 16 kHz IMA ADPCM at 210 kB/s of sustained write, so
+    # this is the slow line in the deploy -- about ten seconds. Absent is a
+    # working toy: talk.py shows every reply on the panel and says nothing,
+    # which is the designed degradation and not a failure.
+    if [ -f "$VOICE_PAK" ]; then
+        echo "  -> voice.pak ($(du -h "$VOICE_PAK" | cut -f1)) - this one is slow"
+        uvx --quiet mpremote connect "$PORT" cp "$VOICE_PAK" ":voice.pak"
+    else
+        echo "  !! $VOICE_PAK missing - the replies will be silent (panel only)"
+        echo "     Build it with: uv run tools/voice_pak.py corpus-voice/"
     fi
 fi
 

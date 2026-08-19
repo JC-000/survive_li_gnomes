@@ -53,6 +53,16 @@ except Exception as _exc:          # noqa: BLE001
     print("early reservation failed (%s); capture will be degraded" % _exc)
     RECORDER = None
 
+# The TFLM arena joins the early block: 64 KB contiguous, which reliably no
+# longer exists once the heavy imports below have churned the heap -- the
+# voice binding's import weight was the third thing to starve it. Handed to
+# si_spot.bind() in reserve().
+try:
+    ARENA = bytearray(64 * 1024)
+except MemoryError:
+    print("early arena reservation failed; spotter will be degraded")
+    ARENA = None
+
 import screen
 import vad
 
@@ -317,10 +327,14 @@ class Conversation:
     exactly that, and handing it a fake sentence instead would be worse.
     """
 
-    def __init__(self):
+    def __init__(self, voice=None):
         self.doctor = None
         self.nouns = None
         self.turns = 0
+        # The `listen.Recorder`, or anything with `has_clip()`. Optional: a
+        # board with no `voice.pak` answers on the panel and says nothing, and
+        # that is a working toy rather than a broken one.
+        self.voice = voice
 
     def _ensure(self):
         if self.doctor is None and eliza is not None:
@@ -348,16 +362,40 @@ class Conversation:
         return self.doctor is not None
 
     def _clip_for(self, text):
-        # say_<sha1[:8]>.pcmw on flash, rendered on the host by the voice
-        # tooling. No clip is the normal case and costs one os.stat.
+        """What to play for this reply, or None. `listen.speak` dispatches on it.
+
+        The clip id is `sha1(reply_text)[:8]` as lowercase ascii hex, which
+        makes the **exact** reply text the primary key: one different comma on
+        either side and the device plays nothing at all. `tools/voice_pak.py`
+        renders against this same string, and its `clip_id()` must stay
+        byte-identical to what is spelled here.
+
+        Two places are consulted, in order:
+
+        1. `voice.pak` -- the 16 kHz corpus, looked up by a binary search over
+           the on-flash index;
+        2. `say_<id>.pcmw` -- the six 8 kHz stopgap clips, still on some boards.
+
+        No clip is the normal case for anything the host has not rendered, and
+        costs one bisect plus one `os.stat`.
+        """
         try:
             # .digest()+hexlify, not .hexdigest(): MicroPython's hashlib
             # objects have no hexdigest method, and the except below would
             # have eaten that NameError as "no clip" forever.
             import binascii
-            digest = binascii.hexlify(hashlib.sha1(text.encode()).digest())
-            name = "say_" + digest[:8].decode() + ".pcmw"
+            clip_id = binascii.hexlify(
+                hashlib.sha1(text.encode()).digest())[:8]
+        except Exception:  # noqa: BLE001
+            return None
+        try:
+            if self.voice is not None and self.voice.has_clip(clip_id):
+                return clip_id
+        except Exception:  # noqa: BLE001 -- a bad pak must not cost the reply
+            pass
+        try:
             import os
+            name = "say_" + clip_id.decode() + ".pcmw"
             os.stat(name)
             return name
         except Exception:  # noqa: BLE001
@@ -558,7 +596,7 @@ def reserve():
     # ~9 KB lower, and it is the path that has to work.
     if si_spot is not None:
         _si = si_spot.Spotter()
-        if _si.bind(buffers=si_patch_buffers()):
+        if _si.bind(buffers=si_patch_buffers(), arena=ARENA):
             # The backend is named on purpose: two runtimes can serve this
             # program, they compute measurably different probabilities from the
             # same weights, and "which one is this board running" was an
@@ -575,6 +613,11 @@ def reserve():
     # 64 KB arena; built any later (the original lazy design) the press-time
     # heap refuses it and the toy goes silent. Both happened live.
     recorder.prepare_chirp()
+
+    # Smaller still (~6 KB of decode scratch), so it goes after the chirp, and
+    # at boot rather than at the first reply for the reason the chirp is here at
+    # all: lazy allocation has silently starved this program's audio twice.
+    recorder.bind_voice()
     return recorder, template_buf
 
 
@@ -597,7 +640,9 @@ def main():
     inputs = Inputs(i2c)
     battery = board.Battery()
     panel = Panel()
-    session = Conversation()
+    # The recorder is also the voice: it holds the open `voice.pak` and the
+    # buffer the clips stream through, so `_clip_for` asks it what it can say.
+    session = Conversation(voice=recorder)
 
     reported_no_mic = False
     print("eliza ready -- hold the screen or POWER, speak, let go")

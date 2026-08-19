@@ -434,8 +434,16 @@ def test_allocation_order():
 
             def prepare_chirp(self):
                 # Part of the contract since the tone buffer moved into the
-                # boot reservations; must run LAST of them.
+                # boot reservations. ~19 KB, so second-to-last.
                 order.append("chirp")
+                return True
+
+            def bind_voice(self, path="voice.pak"):
+                # ~6 KB of ADPCM decode scratch, the smallest reservation and
+                # therefore the last. At boot rather than at the first reply
+                # for the same reason the chirp is: lazy allocation has
+                # starved this program's audio twice.
+                order.append("voice")
                 return True
 
         talk.listen.Recorder = Recorder
@@ -447,8 +455,9 @@ def test_allocation_order():
             load=lambda buf=None, expand=None: order.append("templates") or buf)
 
         talk.reserve()
-        check("reservations in size order: capture, templates, chirp last",
-              order == ["capture", "templates", "chirp"], "order was %s" % order)
+        check("reservations in size order: capture, templates, chirp, voice",
+              order == ["capture", "templates", "chirp", "voice"],
+              "order was %s" % order)
     finally:
         talk.listen.Recorder = saved_recorder
         talk.templates = saved_templates

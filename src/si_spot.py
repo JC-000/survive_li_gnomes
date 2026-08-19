@@ -308,7 +308,7 @@ class _Tflm:
     name = "tflm"
     default_path = MODEL_PATH_TFLM
 
-    def __init__(self, path, arena_bytes=TFLM_ARENA_BYTES):
+    def __init__(self, path, arena_bytes=TFLM_ARENA_BYTES, arena=None):
         handle = open(path, "rb")
         try:
             blob = handle.read()
@@ -317,7 +317,13 @@ class _Tflm:
         # Held for the object's life: TFLM plans into it and keeps pointers
         # into it, so it must outlive the model exactly as the arena does in
         # every other TFLM integration.
-        self.arena = bytearray(arena_bytes)
+        #
+        # `arena` may be handed in pre-allocated. On the device it MUST be:
+        # allocating it here means allocating after every heavy import, and
+        # the 64 KB contiguous block reliably no longer exists by then -- the
+        # voice binding's import weight was the third thing to starve it.
+        # talk.py reserves it at module top with the other early buffers.
+        self.arena = arena if arena is not None else bytearray(arena_bytes)
         self.model = _tflm.new(blob, self.arena)
         self.n_classes = self.model.output_dimensions()[0]
 
@@ -364,7 +370,7 @@ class Spotter:
     def available(self):
         return self.model is not None
 
-    def bind(self, path=None, buffers=None, backend=None):
+    def bind(self, path=None, buffers=None, backend=None, arena=None):
         """Load the model. Returns True on success; never raises.
 
         A board that cannot load the model must still hold a conversation --
@@ -402,8 +408,9 @@ class Spotter:
             return False
 
         try:
+            kwargs = {"arena": arena} if (arena is not None and factory.name == "tflm") else {}
             self.model = factory(path if path is not None
-                                 else factory.default_path)
+                                 else factory.default_path, **kwargs)
             self.backend = factory.name
             self.threshold = THRESHOLD_BY_BACKEND.get(factory.name, THRESHOLD)
             self.n_classes = self.model.n_classes

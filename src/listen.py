@@ -1,7 +1,15 @@
-"""Microphone capture for the push-to-talk ELIZA program.
+"""Microphone capture, and the voice, for the push-to-talk ELIZA program.
 
 16 kHz mono int16, off the ES8311's ADC over PIO + DMA. Nothing here decides
 *what* was said -- it only fills a buffer and says how much of it is real.
+
+It also plays the replies back. `speak()` streams a 16 kHz IMA-ADPCM clip out
+of `voice.pak` through the same buffer, decoding one half while the DMA drains
+the other (`src/adpcm.py` is the codec, `tools/voice_pak.py` the encoder).
+Capture and playback share one buffer because they can never overlap, and one
+sample rate because the clips are rendered at the rate the codec is already
+running -- which is not a coincidence but the point: it deletes the re-clocking
+dance the 8 kHz stopgap needed around every reply.
 
 Why 16 kHz and not the 24 kHz the microphone was first verified at: every speech
 model and dataset in the field is 16 kHz, so matching it avoids a resampler
@@ -35,6 +43,7 @@ Two things that will bite silently if changed:
 import time
 from array import array
 
+import adpcm
 import board
 
 SAMPLE_RATE = 16000
@@ -103,6 +112,17 @@ CHIRP_SETTLE_MS = 140
 
 CHIRP_VOLUME = 90     # ES8311 volume is dB-ish; matches shake.py's DAC_VOLUME.
                       # Restored to DAC_VOLUME, and re-muted, after the tone.
+
+# Speech, NOT the chirp's 90: 90 overdrives this amp and speaker at the clips'
+# peak of 15000. Bench-measured twice, at the desk, by ear -- which is the only
+# instrument that has ever settled this. `tools/voice_pak.py` renders to the
+# matching peak; changing either is a bench measurement, not an edit.
+SPEECH_VOLUME = 82
+
+# Smallest play half `bind_voice` will stream through, in 32-bit words. The real
+# one is 12000 (750 ms); this only rules out a capture buffer so small that the
+# chunk arithmetic cannot round an odd nibble count down. See `_chunk_nibs`.
+MIN_PLAY_HALF_WORDS = 64
 
 
 def allocate_samples(count):
@@ -190,6 +210,45 @@ class Recorder:
         self._final_count = 0
         self._dout_ready = False
         self.available = None  # None = untried, True/False once known
+
+        # --- streaming playback geometry ---------------------------------
+        #
+        # The play buffer IS the capture buffer: 96 KB, idle between turns,
+        # already reserved at the heap floor, and a reply and a recording never
+        # coexist (`start()` refuses while `playing()`). Split into two halves
+        # that ping-pong -- one feeds the DMA while the next chunk of nibbles is
+        # decoded into the other -- which is what lifts the old whole-clip
+        # limit: a clip is no longer capped at 96 KB, only a chunk is.
+        #
+        # Counted in WORDS, because that is what the DMA transfers and what
+        # `adpcm.decode_into` writes; MicroPython counts the same buffer in
+        # halfwords. Mixing those two units is exactly how the "burst of static"
+        # bug happened, so the conversion happens here and nowhere else.
+        #
+        # 12000 words a half = 750 ms of 16 kHz audio, so a clip crosses a
+        # boundary about once a second. Decoding a half costs ~4 ms measured
+        # (see `play_gap_us`), against 750 ms to drain it: the refill window is
+        # not the risk here and never was. The re-arm gap between DMA runs is.
+        self._play_half_words = (len(self.buf) // 2) // 2
+        # The DMA needs an address, not an index. Built once: a memoryview per
+        # chunk would be two heap objects per second on a heap that never
+        # compacts. Both start on a word boundary because a half is a whole
+        # number of words -- which the viper decoder's ptr32 store requires and
+        # `tools/test_adpcm.py` asserts.
+        half_h = 2 * self._play_half_words
+        self._play_halves = (memoryview(self.buf)[0:half_h],
+                             memoryview(self.buf)[half_h:2 * half_h])
+
+        self._pak = None
+        self._nibbles = None      # decode scratch; see bind_voice()
+        self._last_lookup = (None, None)
+        # Upper bound on the widest DMA re-arm gap seen, in microseconds, and
+        # how many boundaries were crossed. Kept rather than probed once: it is
+        # the number that decides whether streaming clicks, the PIO's TX FIFO
+        # covers only ~500 us of it at 16 kHz, and a board that starts missing
+        # the window has no other symptom than a tick nobody can reproduce.
+        self.play_gap_us = 0
+        self.play_boundaries = 0
 
     # --- setup -------------------------------------------------------------
 
@@ -300,18 +359,289 @@ class Recorder:
             print("chirp buffer did not fit; the toy will be silent")
             return False
 
-    def speak(self, i2c, path, rate=8000):
-        """Play one pre-rendered packed-word clip through the speaker.
+    # --- voice output ------------------------------------------------------
 
-        Ten-minute MVP of the voice output, deliberately minimal: clips are
-        8 kHz (half the bytes of 16 k, so the longest reply fits the play
-        buffer), and the codec + MCLK are re-clocked around the playback and
-        restored, the dance the bench tone tests proved. The play buffer IS
-        the capture buffer -- 96 KB, idle between turns, already reserved at
-        the heap floor; a reply and a recording never coexist. Never raises.
+    def bind_voice(self, path="voice.pak"):
+        """Open `voice.pak` and reserve the decode scratch. Returns True if the
+        device can speak.
+
+        Call from `talk.reserve()`, at boot, in a stated position -- **not**
+        lazily at the first reply. The scratch is only ~6 KB, but "allocate it
+        when it is first needed" is the shape that has silently starved the
+        chirp twice on the TFLM image, and a voice that goes missing on the
+        build with the tighter heap is the same bug wearing a different hat.
+        It is the smallest of the boot reservations, so it goes last.
+
+        Never raises. No pak means the device answers on the panel and says
+        nothing, which `talk` already treats as the normal case.
+        """
+        try:
+            pak = adpcm.Pak(path)
+            if not pak.open():
+                return False
+            if pak.rate != self.rate:
+                # Same rate end to end is the whole point (see `_speak_pak`);
+                # a pak at another rate would play at the wrong pitch rather
+                # than fail, so it is refused rather than re-clocked.
+                print("voice.pak is %d Hz, capture is %d Hz -- refusing"
+                      % (pak.rate, self.rate))
+                pak.close()
+                return False
+            if self._play_half_words < MIN_PLAY_HALF_WORDS:
+                # Not a tuning knob: below this the chunk arithmetic in
+                # `_chunk_nibs` has no room to round an odd count down and the
+                # stream would stall rather than glitch. Reaching here means
+                # the capture buffer was built at some size nothing else in
+                # this program asks for.
+                print("play buffer is %d words a half, too small to stream"
+                      % self._play_half_words)
+                pak.close()
+                return False
+            # One chunk of nibbles: two samples a byte, so half a chunk's
+            # words, plus one for an odd tail.
+            self._nibbles = bytearray(self._play_half_words // 2 + 1)
+            self._pak = pak
+            print("voice.pak bound (%d clips, %d Hz)" % (pak.count, pak.rate))
+            return True
+        except Exception as exc:  # noqa: BLE001 -- silence beats a broken boot
+            print("voice unavailable (%s: %s)" % (type(exc).__name__, exc))
+            self._pak = None
+            self._nibbles = None
+            return False
+
+    def has_clip(self, clip_id):
+        """Is there a clip for this id? `talk._clip_for` asks before speaking.
+
+        The answer is cached for one id, because the caller asks and then
+        immediately plays, and each ask is a binary search over the on-flash
+        index.
+        """
+        if self._pak is None:
+            return False
+        entry = self._pak.lookup(clip_id)
+        self._last_lookup = (clip_id, entry)
+        return entry is not None
+
+    def speak(self, i2c, clip):
+        """Say one reply. Returns True if something was played. Never raises.
+
+        `clip` is whatever `talk.Conversation._clip_for` returned:
+
+        - an 8-character `voice.pak` id -- the path that ships, streamed off
+          flash at 16 kHz;
+        - a `say_<id>.pcmw` filename -- the 8 kHz stopgap clips, kept working
+          until they are deleted from the boards that still carry them.
+
+        The dispatch is on the shape of the argument rather than on a flag,
+        because the two differ in more than a rate: only the stopgap needs the
+        codec re-clocked, and that difference is the point (see `_speak_pak`).
         """
         if not self._ensure(i2c):
             return False
+        if isinstance(clip, str) and clip.endswith(".pcmw"):
+            return self._speak_pcmw(clip)
+        return self._speak_pak(clip)
+
+    def _open_output(self, volume=SPEECH_VOLUME):
+        """Wake the DAC, the amp and the DOUT state machine for playback.
+
+        The unmute is not optional and not obvious: the DAC comes out of reset
+        muted, `es8311.init()` does not clear it, and a muted DAC plays a clip
+        with no exception and no sound -- the failure shape CLAUDE.md exists
+        for, which cost a bench session in this file already.
+        """
+        if not self._dout_ready:
+            self._audio.dout_pio_init()
+            self._dout_ready = True
+        self._codec.mute(False)
+        self._codec.volume_set(volume)
+        self._pa.value(1)
+
+    def _close_output(self):
+        """Drop the amp, the volume and the mute. An amp left on is both a
+        battery drain and an open acoustic path into the capture that follows."""
+        try:
+            self._pa.value(0)
+            self._codec.volume_set(DAC_VOLUME)
+            self._codec.mute(True)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _speak_pak(self, clip_id):
+        """Stream one `voice.pak` clip. The path that ships.
+
+        **The clock does not move.** The clips are 16 kHz, capture is 16 kHz,
+        so this touches neither `es8311.init()` nor MCLK -- it unmutes, sets the
+        volume, plays, and puts both back. The 8 kHz stopgap had to re-clock the
+        codec and the MCLK state machine around every reply and restore them
+        afterwards, and every one of those four register paths was a way to
+        leave the microphone running at the wrong rate for the next press.
+        Same rate end to end deletes that class of bug rather than fixing it.
+        """
+        if self._pak is None or self._nibbles is None:
+            return False
+        try:
+            cached_id, entry = self._last_lookup
+            if cached_id != clip_id:
+                entry = self._pak.lookup(clip_id)
+            if entry is None:
+                return False
+            self._open_output()
+            try:
+                return self._stream(entry)
+            finally:
+                self._close_output()
+        except Exception as exc:  # noqa: BLE001 -- voice must never break a turn
+            print("speak failed (%s: %s)" % (type(exc).__name__, exc))
+            self._close_output()
+            return False
+
+    def _stream(self, entry):
+        """Ping-pong the two halves of the capture buffer through the DMA.
+
+        Decode the next chunk into the idle half while the DMA drains the live
+        one, swap when it finishes. Returns True once the clip has been played
+        out; the caller drops the amp.
+        """
+        offset, _length, n_samples = entry
+        if n_samples < 1:
+            return False
+        state, header_samples = self._pak.start_clip(offset)
+        if header_samples != n_samples:
+            # The index and the blob disagree about the length. Refuse rather
+            # than play the shorter of the two: this means the pak was written
+            # by something that did not agree with `write_pak`, and the next
+            # thing it disagrees about might be an offset.
+            raise ValueError("clip length %d in index, %d in blob"
+                             % (n_samples, header_samples))
+
+        half = self._play_half_words
+        buf = self.buf
+
+        # Sample 0 is the header's predictor and is not encoded, so the first
+        # chunk carries one fewer nibble than the rest.
+        adpcm.emit_sample(buf, 0, state[0])
+        remaining = n_samples - 1
+        nibs = self._chunk_nibs(remaining, half - 1)
+        self._decode(1, nibs, state)
+        remaining -= nibs
+        slot = 0
+        self._arm(slot, 1 + nibs, True)
+
+        while remaining:
+            other = slot ^ 1
+            nibs = self._chunk_nibs(remaining, half)
+            self._decode(other * half, nibs, state)
+            remaining -= nibs
+            # Tight, deliberately: `time.sleep_ms(1)` here would be twenty times
+            # the whole gap budget. The PIO's TX FIFO holds 8 words -- 500 us at
+            # 16 kHz -- and that is the entire margin between "seamless" and a
+            # tick at every boundary.
+            t0 = self._await_dma()
+            self._arm(other, nibs, False)
+            gap = time.ticks_diff(time.ticks_us(), t0)
+            if gap > self.play_gap_us:
+                self.play_gap_us = gap
+            self.play_boundaries += 1
+            slot = other
+
+        self._await_dma()
+        # `play_finished()` is the DMA draining into the FIFO, not the speaker
+        # stopping. Dropping the amp on it alone clips the tail of every reply.
+        time.sleep_ms(CHIRP_SETTLE_MS)
+        return True
+
+    def _chunk_nibs(self, remaining, room):
+        """How many nibbles the next chunk takes: at most `room`, and even
+        unless it is the last.
+
+        Nibble 2k and 2k+1 share a byte, so a chunk that stopped on an odd count
+        would leave half a byte behind and the next chunk would have to re-enter
+        that byte at its high half -- which `adpcm.decode_into` cannot do, since
+        it always starts at a low nibble. Rounding down by one is free (one
+        sample earlier in a 12000-sample chunk) and keeps every chunk starting
+        at a byte boundary with `src_off=0`.
+
+        Requires `room >= 2`, which `bind_voice` enforces: at room 1 the
+        rounding has nowhere to go and this would return 0 and hang the stream
+        rather than glitch it. Found by `tools/test_adpcm.py` sweeping the
+        edges, not by anything at the desk -- a hang there would have looked
+        like the board dying mid-reply.
+        """
+        n = room if remaining > room else remaining
+        if n < remaining and (n & 1):
+            n -= 1
+        return n
+
+    def _decode(self, out_off, nibs, state):
+        """Read one chunk of nibbles off flash and decode it into `out_off`."""
+        n_bytes = (nibs + 1) // 2
+        got = self._pak.readinto(self._nibbles, n_bytes)
+        if got != n_bytes:
+            raise ValueError("clip body truncated: %d of %d" % (got, n_bytes))
+        adpcm.decode_into(self._nibbles, 0, nibs, self.buf, out_off, state)
+
+    def _await_dma(self):
+        """Spin until the DMA has handed the last word to the PIO. Returns the
+        tick at which that was noticed, which is the start of the re-arm gap."""
+        audio = self._audio
+        while not audio.play_finished():
+            pass
+        return time.ticks_us()
+
+    def _arm(self, slot, count, restart):
+        """Point the TX DMA at one half of the buffer and start it.
+
+        `restart=True` on the first chunk only. It runs `_restart_tx()`, which
+        jumps the state machine back to the top of `audio_pio_out` and resyncs
+        it to an LRCLK frame -- necessary once, so left and right land in the
+        right halves of the frame, and fatal every time after that: the program
+        opens with a `pull()` whose word is discarded before the `start` label,
+        so a restart per chunk would drop a sample at every boundary AND throw
+        away the FIFO contents that are covering the re-arm gap.
+
+        Mid-clip it therefore writes two registers and triggers. Same deviation
+        from the vendor code as `_configure_dma` above and for the same reason:
+        `audio_pio_mpy.py` is vendored and shipped to the Magic 8-Ball, and this
+        program does not get to change what the 8-Ball runs.
+        """
+        import rp2
+
+        audio = self._audio
+        if audio.dma_tx is None:
+            audio.dma_tx = rp2.DMA()
+        dma = audio.dma_tx
+        mv = self._play_halves[slot]
+        if restart:
+            audio._restart_tx()
+            ctrl = audio._dma_pack_ctrl(
+                dma,
+                size=2,  # 32-bit transfers: the TX path is packed stereo words
+                inc_read=True,
+                inc_write=False,
+                treq_sel=audio._pio_dreq(audio.sm_dout_id, True),
+                high_pri=True,
+                bswap=False,
+            )
+            dma.config(read=mv, write=audio.sm_dout, count=count, ctrl=ctrl,
+                       trigger=True)
+        else:
+            # CTRL and the write address are still the ones set above; only the
+            # source and the length change. `config(trigger=True)` with nothing
+            # else is `dma_channel_start`.
+            dma.read = mv
+            dma.count = count
+            dma.config(trigger=True)
+
+    def _speak_pcmw(self, path, rate=8000):
+        """Play one whole 8 kHz `.pcmw` clip. The stopgap, kept alive.
+
+        Loads the file into the play buffer entire -- which is why these clips
+        were 8 kHz, to fit -- and re-clocks the codec and MCLK down for the
+        duration and back afterwards. Both of those constraints are gone on the
+        pak path; this exists only until the six stopgap clips are off the
+        boards that still hold them. Do not extend it.
+        """
         try:
             with open(path, "rb") as fh:
                 n_bytes = fh.readinto(self.buf)
@@ -322,11 +652,8 @@ class Recorder:
                 self._audio.dout_pio_init()
                 self._dout_ready = True
             # re-clock down for the clip...
-            # Volume 82, NOT the chirp's 90: speech at 90 overdrives this
-            # amp and speaker (bench-measured yesterday at these peaks; the
-            # chirp gets away with it only because it is a 300 ms beep).
             self._codec.init(mclk_freq=rate * 256, sample_freq=rate,
-                             res_in=16, res_out=16, volume=82,
+                             res_in=16, res_out=16, volume=SPEECH_VOLUME,
                              mic_gain=MIC_GAIN)
             self._codec.mute(False)
             self._audio.mclk_freq = rate * 256
