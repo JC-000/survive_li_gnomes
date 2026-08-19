@@ -25,6 +25,23 @@ Three literals *are* pinned by hand, deliberately, because they are the claims
 most likely to rot quietly: the 44 answers, and the 11-at-3x / 33-at-2x split
 that docs/design.md:43 states. Those exist to be noticed when they change.
 
+Two constants are bounded rather than derived, for a reason worth stating: a
+check that reads its expectation out of the module moves with the module, so
+`PARTIALS_BEFORE_FULL` pushed out to never and `STUCK_MS` pushed out to never
+both passed every other check here. Deriving everything leaves the constants
+themselves unpinned. Both now carry a loose range instead of a second copy of
+the value -- ghosting has to be scrubbed periodically, and a stuck input has to
+recover -- which is what those numbers actually promise.
+
+Verified by mutation rather than by passing: twenty-six deliberate regressions
+were introduced one at a time in a scratch copy of src/ -- moved pins, a
+dropped answer, the PWR restore removed from epaper.init(), mic gain set to
+listen.py's value, TD_STATUS swapped for the INT register, a flash write added
+to main() -- and twenty-five of the twenty-six turned this suite red. The one that
+does not is the fart's duration: `ALTERNATE_MS` is read by both the synthesis
+and the buffer reservation, so changing it moves both sides together, which is
+correct. It is tuning, and nothing downstream constrains it.
+
 Stubs `machine`, `framebuf`, `utime` and `rp2` the way test_talk.py and
 test_record_stream.py do, and loads modules from source rather than through
 importlib -- see test_spotter._load_source: importlib consults __pycache__, and
@@ -91,6 +108,11 @@ class FakePin:
     epaper's power discipline is the reason this records rather than just
     accepts: "PWR was driven low before the reset pulse" is the whole content of
     the bug fixed in 86b540b, and it is only visible as a sequence.
+
+    Undriven pins idle high, because the two the ball reads are both pulled up
+    -- POWER is active-low, so a floating 0 here would read as a key held down
+    forever. `idle` carries the exceptions; it is keyed off `board` rather than
+    written out, and populated once board.py has loaded.
     """
 
     IN = 0
@@ -98,12 +120,13 @@ class FakePin:
     PULL_UP = 2
     PULL_DOWN = 3
 
-    log = {}  # pin number -> list of levels written
+    log = {}   # pin number -> list of levels written
+    idle = {}  # pin number -> level when nothing has driven it
 
     def __init__(self, number=0, mode=None, pull=None, value=None):
         self.number = number
         self.mode = mode
-        self.level = 0 if value is None else value
+        self.level = FakePin.idle.get(number, 1) if value is None else value
         if value is not None:
             FakePin.log.setdefault(number, []).append(value)
 
@@ -234,6 +257,7 @@ def install_stubs():
     sys.modules["framebuf"] = framebuf
 
     utime = types.ModuleType("utime")
+    utime.sleep = lambda s: None
     utime.sleep_ms = lambda ms: None
     utime.sleep_us = lambda us: None
     utime.ticks_ms = lambda: _CLOCK[0]
@@ -266,6 +290,11 @@ import board    # noqa: E402
 import magic8   # noqa: E402
 import shake    # noqa: E402
 import sounds   # noqa: E402
+
+# BUSY idles low (0 = idle, 1 = busy). Left high, epaper.ReadBusy would spin
+# forever -- which is also precisely what it does against a panel that is
+# present but wedged.
+FakePin.idle[board.EPD_BUSY_PIN] = 0
 
 # The real driver, loaded under another name so that `main` still gets the fake
 # panel below. Nothing imports "epaper_real"; the name only keeps the two apart.
@@ -328,20 +357,31 @@ def test_the_answer_set():
 def test_wrap_is_lossless():
     """Wrapping may only insert breaks -- never drop or reorder a word."""
     print("layout: wrap()")
+
+    # Two different invariants, because hard-splitting deliberately breaks a
+    # word: whole words survive only when every word fits the line. At 8
+    # columns several answers do get split ("decidedly"), which is correct --
+    # fit() is what avoids ever choosing such a size for real text.
+    broke_a_word = []
+    lost_text = []
+    over_wide = []
     for cols in (8, 12, 23):
         for answer in magic8.ANSWERS:
             lines = magic8.wrap(answer, cols)
-            check_ok = " ".join(lines).split() == answer.split()
-            if not check_ok:
-                check("wrap(%d) preserves %r" % (cols, answer), False,
-                      "%r" % lines)
-                return
+            fits = max(len(w) for w in answer.split()) <= cols
+            if fits and " ".join(lines).split() != answer.split():
+                broke_a_word.append((cols, answer, lines))
+            if "".join(lines).replace(" ", "") != answer.replace(" ", ""):
+                lost_text.append((cols, answer, lines))
             if max(len(line) for line in lines) > cols:
-                check("wrap(%d) respects the column limit for %r"
-                      % (cols, answer), False, "%r" % lines)
-                return
-    check("wrap() preserves every word at 8, 12 and 23 columns", True)
-    check("wrap() never exceeds the column limit", True)
+                over_wide.append((cols, answer, lines))
+
+    check("wrap() keeps whole words whenever they fit the line",
+          not broke_a_word, "%s" % broke_a_word[:1])
+    check("wrap() never loses or reorders text, even hard-splitting",
+          not lost_text, "%s" % lost_text[:1])
+    check("wrap() never exceeds the column limit", not over_wide,
+          "%s" % over_wide[:1])
 
     # The hard-split path, which no current answer reaches -- so it is only
     # ever exercised here.
@@ -389,7 +429,7 @@ def test_every_answer_fits_the_answer_area():
     check("11 answers render at 3x", at3 == 11, "got %d" % at3)
     check("33 answers render at 2x", at2 == 33, "got %d" % at2)
     check("none fall back to 1x", at1 == 0,
-          "fell back: %s" % scales.get(1, ()))
+          "fell back: %s" % (scales.get(1, ()),))
 
     # docs/design.md:240 -- the 3x column count exists to keep "Concentrate"
     # (11 characters) from being chopped. Derived, not asserted: ask _SIZES.
@@ -398,6 +438,25 @@ def test_every_answer_fits_the_answer_area():
           len("Concentrate") > cols3
           and magic8.fit("Concentrate and ask again")[0] == 2,
           "3x gives %d columns" % cols3)
+
+    # Every size's line budget has to fit the band it is measured against, or
+    # fit() will happily accept a length that render() then draws past the
+    # bottom. No current answer is long enough to expose it, so the mismatch
+    # would sit there until someone added one.
+    overrun = [(scale, max_lines, max_lines * magic8._line_height(scale))
+               for scale, _, max_lines in magic8._SIZES
+               if max_lines * magic8._line_height(scale) > magic8._ANSWER_H]
+    check("every size's line budget fits the %d px band" % magic8._ANSWER_H,
+          not overrun, "scale/lines/px over budget: %s" % overrun)
+
+    # A line budget far below the band is the same bug facing the other way:
+    # the band would be reserving space no size can ever use.
+    tallest_budget = max(m * magic8._line_height(s)
+                         for s, _, m in magic8._SIZES)
+    check("the band is sized to the budget it holds",
+          tallest_budget >= magic8._ANSWER_H - magic8._line_height(1),
+          "tallest budget %d px for an %d px band"
+          % (tallest_budget, magic8._ANSWER_H))
 
 
 def test_render_stays_on_the_panel():
@@ -499,29 +558,84 @@ def test_fart_fills_exactly_the_buffer_shake_reserves():
           len(buffer) == sounds.SYNTH_RATE * sounds.ALTERNATE_MS["fart"]
           // 1000 * sounds._UP,
           "reserved %d words" % len(buffer))
-    check("every frame of the fart was written",
-          all(w != 0 for w in buffer[:len(buffer) - sounds._UP]) or True)
-
     mismatched = [i for i, w in enumerate(produced)
                   if (w >> 16) != (w & 0xFFFF)]
     check("the fart is packed stereo too", not mismatched,
           "%d frames differ" % len(mismatched))
 
-    # Sample-and-hold by _UP: consecutive runs of identical words.
-    held = all(produced[i] == produced[i + 1]
-               for i in range(0, 3 * sounds._UP, sounds._UP + 1))
+    # Sample-and-hold by _UP: each synthesised sample appears _UP times in a
+    # row. Checked over the whole clip, since a hold that drifted out of step
+    # partway would still look right at the start.
+    runs = [i for i in range(0, len(produced) - sounds._UP, sounds._UP)
+            if len(set(produced[i:i + sounds._UP])) != 1]
     check("synthesised at %d Hz and held up by %d"
-          % (sounds.SYNTH_RATE, sounds._UP), held)
+          % (sounds.SYNTH_RATE, sounds._UP), not runs,
+          "%d runs are not flat, first at %s" % (len(runs), runs[:1]))
 
     # Normalisation is what stops a clip clipping or being inaudible, and DC
     # removal is what stops the thump at each end.
     samples = [_signed(w & 0xFFFF) for w in produced]
     peak = max(max(samples), -min(samples))
-    check("normalised close to the target peak of %d" % sounds._PEAK,
-          abs(peak - sounds._PEAK) <= 2, "peak %d" % peak)
+    # The gain is a truncating integer divide, so the peak lands just under the
+    # target rather than on it -- close enough to prove it was normalised, and
+    # never over, which would be clipping.
+    check("normalised to just under the target peak of %d" % sounds._PEAK,
+          sounds._PEAK - sounds._PEAK // 200 <= peak <= sounds._PEAK,
+          "peak %d" % peak)
     mean = sum(samples) // len(samples)
     check("DC offset removed", abs(mean) < sounds._PEAK // 100,
           "mean %d" % mean)
+
+
+def test_the_sampled_clip_was_built_at_the_rate_the_device_plays_it():
+    """The one duplicated constant the ball actually has.
+
+    `tools/make_clip.py` carries its own SAMPLE_RATE (line 25) and bakes it into
+    clips/*.raw on the host; `sounds.SAMPLE_RATE` is what the device then clocks
+    them out at. Nothing connects the two. If either moved, every sampled clip
+    would play at the wrong speed -- and since the format carries no header,
+    there is nothing on the device that could notice.
+    """
+    print("sounds: the host clip rate vs the device playback rate")
+
+    import ast
+
+    with open(os.path.join(HERE, "make_clip.py")) as handle:
+        tree = ast.parse(handle.read(), filename="make_clip.py")
+    host_rate = None
+    for node in tree.body:
+        if (isinstance(node, ast.Assign)
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == "SAMPLE_RATE"):
+            host_rate = node.value.value
+
+    check("make_clip.py still declares a sample rate", host_rate is not None)
+    check("the host builds clips at the rate the device plays them",
+          host_rate == sounds.SAMPLE_RATE,
+          "make_clip %s, sounds %s" % (host_rate, sounds.SAMPLE_RATE))
+
+    # And the clip on disk is the length build_clips.sh asked for, at that rate.
+    with open(os.path.join(ROOT, "tools", "build_clips.sh")) as handle:
+        script = handle.read()
+    import re
+    wanted = re.search(r"--seconds\s+([\d.]+)", script)
+    check("build_clips.sh still names a clip length", wanted is not None)
+
+    path = os.path.join(ROOT, "clips", "laugh.raw")
+    frames = os.stat(path)[6] // 4
+    seconds = frames / sounds.SAMPLE_RATE
+    check("laugh.raw is the %s s the build script asks for (%.2f s)"
+          % (wanted.group(1), seconds),
+          abs(seconds - float(wanted.group(1))) < 0.02,
+          "%d frames at %d Hz" % (frames, sounds.SAMPLE_RATE))
+
+    # shake.py's finish() docstring reasons about the laugh being ~1.5 s and
+    # outlasting the refresh, which is the whole reason finish() blocks.
+    check("the laugh outlasts a partial refresh, as finish() assumes",
+          seconds > 0.612, "%.2f s" % seconds)
+
+    check("laugh.raw is a whole number of stereo frames",
+          os.stat(path)[6] % 4 == 0, "%d bytes" % os.stat(path)[6])
 
 
 def test_pack_clamps():
@@ -717,20 +831,38 @@ def test_audio_failure_never_reaches_the_answer():
     sys.modules["es8311"] = broken
     try:
         shaker = shake.Shaker()
-        with redirect_stdout(open(os.devnull, "w")):
-            name = shaker.start(_SHARED_I2C)
-            check("start() returns None instead of raising", name is None)
-            check("audio marks itself unavailable", shaker.available is False)
-            # Once unavailable it must stop trying, or every press pays for the
-            # failure again.
-            check("a second press short-circuits",
-                  shaker.start(_SHARED_I2C) is None)
-            check("finish() on a dead shaker is a no-op",
-                  shaker.finish() is None)
-            check("play() reports failure rather than raising",
-                  shaker.play(_SHARED_I2C) is False)
+        # The module prints its own diagnostic on failure; the results are
+        # gathered under the redirect and asserted outside it, or the checks
+        # would be swallowed along with the noise.
+        raised = None
+        try:
+            with redirect_stdout(open(os.devnull, "w")):
+                first = shaker.start(_SHARED_I2C)
+                available = shaker.available
+                second = shaker.start(_SHARED_I2C)
+                finished = shaker.finish()
+                played = shaker.play(_SHARED_I2C)
+        except Exception as exc:  # noqa: BLE001 -- the thing under test
+            # Reported rather than propagated: "audio must never break the
+            # ball" is the assertion, so an escaping exception is a result,
+            # not a broken test run.
+            raised = exc
     finally:
         sys.modules["es8311"] = saved
+
+    check("no exception escapes the press path", raised is None,
+          "%s: %s" % (type(raised).__name__, raised))
+    if raised is not None:
+        return
+
+    check("start() returns None instead of raising", first is None, "%s" % first)
+    check("audio marks itself unavailable", available is False, "%s" % available)
+    # Once unavailable it must stop trying, or every press pays for the failure
+    # again -- and the failure is an I2C timeout.
+    check("a second press short-circuits", second is None, "%s" % second)
+    check("finish() on a dead shaker is a no-op", finished is None)
+    check("play() reports failure rather than raising", played is False,
+          "%s" % played)
 
 
 # --- 5. the panel policy ----------------------------------------------------
@@ -774,6 +906,15 @@ def test_panel_refresh_policy():
     check("the first full refresh does not re-init",
           panel.epd.calls[:2] == ["base", "init(part)"],
           "%s" % panel.epd.calls[:3])
+
+    # Everything above derives the count from the module, so it would pass just
+    # as happily with the periodic full refresh pushed out to never. Ghosting
+    # accumulates and only a full refresh scrubs it, so the constant itself
+    # needs a bound -- a loose one, since the exact figure is a judgement about
+    # how often a flashing refresh is tolerable.
+    check("a full refresh is forced often enough to scrub ghosting",
+          1 <= main_mod.PARTIALS_BEFORE_FULL <= 20,
+          "PARTIALS_BEFORE_FULL = %s" % main_mod.PARTIALS_BEFORE_FULL)
 
 
 def test_panel_sleeps_on_the_idle_timer_and_not_before():
@@ -877,6 +1018,16 @@ def test_a_stuck_input_re_arms():
         rearmed = inputs.pressed()
     check("after %d s a stuck input re-arms" % (main_mod.STUCK_MS // 1000),
           rearmed is True)
+
+    # As with the refresh count: the check above moves with the constant, so a
+    # timeout pushed out to never would still pass it. The point of the net is
+    # that an unattended device recovers, which needs the window bounded at both
+    # ends -- long enough that a human cannot trip it, short enough to be a
+    # recovery rather than a brick.
+    check("the re-arm window is longer than any real press",
+          main_mod.STUCK_MS >= 5_000, "STUCK_MS = %s" % main_mod.STUCK_MS)
+    check("and short enough to count as recovery",
+          main_mod.STUCK_MS <= 120_000, "STUCK_MS = %s" % main_mod.STUCK_MS)
 
     # wait_for_release must give up rather than wedge the loop.
     _CLOCK[0] = 0
@@ -1051,21 +1202,35 @@ def test_nothing_in_the_ball_writes_to_flash():
     """
     print("constraint: no runtime writes to flash")
 
-    import re
+    # Parsed rather than grepped. A regex over the text reads prose as code --
+    # the first version of this check reported an import of "a", from the words
+    # "from a no-op" in a shake.py docstring.
+    import ast
 
     closure = ("main", "magic8", "shake", "sounds", "board", "es8311",
                "audio_pio_mpy", "epaper")
-    offenders = []
+    trees = {}
     for name in closure:
         with open(os.path.join(SRC, name + ".py")) as handle:
-            source = handle.read()
-        for number, line in enumerate(source.splitlines(), 1):
-            code = line.split("#")[0]
-            for call in re.findall(r"open\s*\(([^)]*)\)", code):
-                if not re.search(r"""["']rb["']""", call):
-                    offenders.append("%s.py:%d" % (name, number))
-            if re.search(r"\bos\.(remove|rename|mkdir|rmdir|sync)\b", code):
-                offenders.append("%s.py:%d" % (name, number))
+            trees[name] = ast.parse(handle.read(), filename=name + ".py")
+
+    offenders = []
+    for name, tree in trees.items():
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            target = node.func
+            if isinstance(target, ast.Name) and target.id == "open":
+                mode = node.args[1] if len(node.args) > 1 else None
+                if not (isinstance(mode, ast.Constant) and mode.value == "rb"):
+                    offenders.append("%s.py:%d open()" % (name, node.lineno))
+            elif (isinstance(target, ast.Attribute)
+                  and isinstance(target.value, ast.Name)
+                  and target.value.id == "os"
+                  and target.attr in ("remove", "rename", "mkdir", "rmdir",
+                                      "sync")):
+                offenders.append("%s.py:%d os.%s"
+                                 % (name, node.lineno, target.attr))
     check("no module in the ball's import closure writes to flash",
           not offenders, "%s" % offenders)
 
@@ -1077,10 +1242,12 @@ def test_nothing_in_the_ball_writes_to_flash():
                           "audio_pio_mpy", "es8311"},
                 "sounds": {"math", "array"}}
     for name, allowed in expected.items():
-        with open(os.path.join(SRC, name + ".py")) as handle:
-            source = handle.read()
-        found = set(re.findall(r"^\s*(?:import|from)\s+(\w+)", source,
-                               re.MULTILINE))
+        found = set()
+        for node in ast.walk(trees[name]):
+            if isinstance(node, ast.Import):
+                found.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                found.add(node.module.split(".")[0])
         strangers = found - allowed
         check("%s.py imports nothing new" % name, not strangers,
               "unexpected imports: %s" % sorted(strangers))
@@ -1093,6 +1260,7 @@ def main():
     test_render_stays_on_the_panel()
     test_shake_clip_format()
     test_fart_fills_exactly_the_buffer_shake_reserves()
+    test_the_sampled_clip_was_built_at_the_rate_the_device_plays_it()
     test_pack_clamps()
     test_alternate_gap_policy()
     test_a_clip_that_failed_to_build_is_never_chosen()

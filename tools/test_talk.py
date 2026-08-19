@@ -328,7 +328,30 @@ def test_a_rejection_reaches_the_no_keyword_path():
     fresh = talk.Conversation()
     check("first turn with nothing heard greets rather than complaining",
           fresh.turns == 0 and fresh.greeting().upper() == eliza_rules.GREETING)
+
+    # ...and only the first. main() picks between greeting() and NOTHING_HEARD
+    # on `turns == 0`, so a greeting that does not count as a turn greets on
+    # every failed endpoint instead of once -- and NOTHING_HEARD becomes
+    # unreachable until a press succeeds. Endpointing failures are common
+    # enough to make that the normal experience rather than an edge case:
+    # 49% of utterances at 8 dB SNR, 83% at 6 dB.
+    check("the greeting counts as a turn, so main() says it once", fresh.turns == 1,
+          "turns is %d after greeting; main() will greet again" % fresh.turns)
+    check("a greeting on the stub path counts too",
+          _greeting_turns_without_eliza() == 1)
     talk.spotter = saved_spotter
+
+
+def _greeting_turns_without_eliza():
+    """`turns` after one greeting with no engine deployed. See above."""
+    saved = talk.eliza
+    try:
+        talk.eliza = None
+        stub = talk.Conversation()
+        stub.greeting()
+        return stub.turns
+    finally:
+        talk.eliza = saved
 
 
 # --- 3. the degraded paths, which are currently only claimed by comments ----

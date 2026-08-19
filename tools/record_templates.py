@@ -42,6 +42,14 @@ Output (see --format):
     bin   src/templates.bin   the same bytes, plus a small src/templates.py
           + src/templates.py  that reads it. Measurably better on both counts
                               below; use it if deploy.sh will carry two files.
+
+**`--out` defaults to `src/` and `./tools/deploy.sh eliza` reads both files from
+there.** Point it somewhere else for inspection by all means, but a template set
+built into another directory will not deploy: the loader has to sit in `src/`
+with the other device modules, and deploy.sh looks for the blob beside it
+(`TEMPLATE_BLOB`). The two ends disagreed once -- the loader shipped, the blob
+did not, and the board answered every press with a deflection, which is exactly
+what a shy recogniser looks like. `tools/test_templates.py` now pins it.
 """
 
 import argparse
@@ -58,6 +66,10 @@ sys.path.insert(0, HERE)
 import mfcc    # noqa: E402
 import vad     # noqa: E402
 import vocab   # noqa: E402
+
+# Named rather than written inline into add_argument so tools/test_templates.py
+# can assert it against deploy.sh's TEMPLATE_BLOB instead of parsing this file.
+DEFAULT_OUT = os.path.join(HERE, "..", "src")
 
 REPS = 3
 RECORD_SECONDS = 2.0
@@ -376,7 +388,10 @@ def main(argv=None):
                      help="directory of WAVs, ideally tools/enrol.py's output")
     src.add_argument("--board", action="store_true",
                      help="record through the board's microphone over serial")
-    ap.add_argument("--out", default=os.path.join(HERE, "..", "src"))
+    ap.add_argument("--out", default=DEFAULT_OUT,
+                    help="where to write templates.py (and templates.bin). "
+                         "The default is src/, which is where deploy.sh looks; "
+                         "anywhere else is for inspection and will not deploy.")
     ap.add_argument("--format", choices=("py", "bin"), default="bin",
                     help="bin writes templates.bin plus a small loader (the "
                          "default; a .py literal of this size will not compile "

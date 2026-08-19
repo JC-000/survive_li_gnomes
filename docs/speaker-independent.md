@@ -466,7 +466,7 @@ the option was never blocked by top-1.
 | Label | Means |
 | --- | --- |
 | *dry-run* | Measured on a **throwaway 10-voice corpus I generated to prove the harness**. Not a result. Never quote these as findings. |
-| *real corpus* | Measured on `corpus-tts/`, the voice-disjoint corpus with a channel model. **There are none of these yet — the roster is frozen but the audio was never generated.** |
+| *real corpus* | Measured on `corpus-tts/`, the voice-disjoint corpus with a channel model. ~~There are none of these yet — the roster is frozen but the audio was never generated.~~ **Superseded: the audio was generated and this is now most of the document.** 16030 utterances over 8 training voices (`beb8955`); see [the result](#the-result-in-three-numbers). |
 | *verified* | Checked by running the thing, on the host |
 | *unknown* | Not established — see [What is still unknown](#what-is-still-unknown) |
 
@@ -884,14 +884,21 @@ priority. The remainder, in order of value:
    The 16-voice expressive family and the novelty tier are ~2 hours more, and
    the model that produced the headline trained on **4 voices**. More training
    voices is the largest untested lever.
-4. **Retrain on the rebuilt roster and re-run the evaluation.** The split now
-   holds an American voice of each gender in **test** (Allison, Nathan, both
-   Enhanced), so generalisation to an unseen American speaker becomes measured
-   rather than assumed. The CNN numbers in this document predate that split and
-   are labelled as such.
-5. **Get the model onto the board.** `build/si_real.tflite` converts; run
-   `tools/tmdl_info.py --pad` and hand it over with a handful of `uint8`
-   patches. Whether `emlearn_cnn_int8` imports at all is still unanswered.
+4. ~~**Retrain on the rebuilt roster and re-run the evaluation.**~~ **Done
+   (`beb8955`).** `build/si_am.*` is that model: 8 training voices with American
+   English in train, 16030 utterances. Held-out synthetic keyword accuracy went
+   0.626 → 0.850 and **the real speaker did not move at all** — top-1 0.700,
+   recall 0.500 at precision 1.000, both unchanged. Kept on the list as a
+   result rather than deleted, because "more `say` output improved only the
+   half that was already working" is the reason item 1 is more real speech and
+   not more synthesis. Note `si_am` has never been converted to `.tmdl`.
+5. ~~**Get the model onto the board.** Whether `emlearn_cnn_int8` imports at
+   all is still unanswered.~~ **Done (`25463c7`).** It imports on `armv7emsp`
+   at 12096 B of heap, classifies emlearn's ten MNIST digits 10/10, and runs
+   `si_real` at 66.6 ms an inference. See [The device path](#the-device-path--it-runs).
+   What that session opened in its place is item 2: the `.tmdl` and the
+   `.tflite` disagree on 3 of 8 patches, so the operating point measured on the
+   host is not the operating point the board has.
 6. **Then tune for precision.** Sweep `--unknown-weight`, `--width` and
    `--arch`. The operating point matters more than the accuracy and none of
    these has been swept once against the real corpus.

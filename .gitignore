@@ -32,3 +32,11 @@ corpus_noise/
 corpus*/
 takes/
 takes-oov/
+enrol-takes/
+
+# The built template set: someone's voice, ~70 KB of packed statics plus its
+# generated loader. Reproducible from an enrolment run, and speaker-specific,
+# so it is no more committable than the recordings above. deploy.sh reads both
+# from here (TEMPLATE_BLOB); tools/record_templates.py writes them here.
+src/templates.bin
+src/templates.py

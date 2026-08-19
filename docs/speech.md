@@ -1087,6 +1087,33 @@ A turn, against a 66-template set with the corpus's length distribution:
 The 98-frame row matches faster than the 48-frame one because the duration gate
 rejects 40 of the 66 templates before the inner loop — the gate doing its job.
 
+### The one end-to-end run of the whole program
+
+Those rows are the recogniser measured in isolation. The program itself —
+capture, endpointing, the engine, the panel — has been run on the board **once**,
+on 2026-08-18 via `mpremote run src/talk.py`, and this is the only record of it:
+
+```
+-> speech 960..9280 (520 ms), heard -
+   I am not sure I understand you fully [full, 3707 ms]
+-> speech 6400..35200 (1800 ms), heard -
+   Please go on [partial, 3213 ms]
+```
+
+Two turns, both reaching the glass. The timings are press-to-reply wall clock
+and include however long the screen was held, so they are not comparable with
+the table above; what they establish is that `listen_once` → `vad.Endpointer` →
+`Conversation` → `screen.render` → `Panel.show` runs, and that the
+partial-refresh policy works on the second turn as `docs/design.md` says it
+should.
+
+This is the same run behind the "spans of 520 ms and 1800 ms off actual
+utterances" line in `1bca7f5`, which dates it: **it predates the chirp-settle
+fix (`2876682`) and the `MIC_GAIN` 3 → 1 change (`f2bc58e`)**, so the capture
+path as it stands today has not been through it. And `heard -` on both turns is
+not a rejection — there were no templates on the device, and there still are
+none. **No reply beyond a deflection has ever been spoken to this program.**
+
 **Matching dominates, about two to one** rather than the eight to one the
 operation counts suggested: the front end's FFT is heavier per operation than
 the matcher's L1 loop, so counting operations under-priced it. `BAND` is

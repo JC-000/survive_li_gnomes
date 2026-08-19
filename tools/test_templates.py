@@ -37,8 +37,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "src"))
 sys.path.insert(0, HERE)
 
-import mfcc  # noqa: E402
-import vad   # noqa: E402
+import mfcc   # noqa: E402
+import vad    # noqa: E402
+import vocab  # noqa: E402
 
 _fails = []
 
@@ -128,6 +129,75 @@ def synthetic(n_frames, seed=7):
     return rows
 
 
+def deploy_seam():
+    """The handover: what record_templates.py writes, deploy.sh must copy.
+
+    This is a *path* check and it exists because the two ends disagreed
+    silently for the whole of the spotter's life. `record_templates.py` wrote
+    `src/templates.bin`; `deploy.sh` looked for `templates.bin` in the repo
+    root. The loader module was copied either way -- it is picked up by the
+    module loop, which does look in `src/` -- so the board booted with a
+    `templates.py` whose `open()` raised, `talk.reserve_templates` swallowed it,
+    and every press came back a deflection. That is indistinguishable from a
+    recogniser that is merely shy, which is the failure `docs/speech.md` says
+    has no symptom pointing at it.
+
+    Nothing here needs audio or a board: it runs the real `emit()` over
+    synthetic statics and then reads the two scripts' own declarations of where
+    the file goes.
+    """
+    import re
+    import shutil
+    import tempfile
+
+    import record_templates as rt
+
+    print("\nthe record_templates -> deploy.sh handover")
+
+    # 1. What emit() actually writes, for both formats, using the real thing.
+    takes = dict((form, [synthetic(4, seed=len(form) + 3)])
+                 for form in vocab.FORMS)
+    for fmt, want in (("bin", ("templates.py", "templates.bin")),
+                      ("py", ("templates.py",))):
+        out = tempfile.mkdtemp()
+        try:
+            rt.emit(takes, out, fmt, "statics", "test_templates.py")
+            got = tuple(sorted(os.listdir(out)))
+            check("--format %s writes %s" % (fmt, ", ".join(want)),
+                  got == tuple(sorted(want)), "wrote %s" % (got,))
+            if fmt == "bin":
+                # The loader opens this by bare name, because the device's cwd
+                # is the filesystem root and mpremote copies to ":templates.bin".
+                src = open(os.path.join(out, "templates.py")).read()
+                check("the loader opens \"templates.bin\" by name",
+                      'BLOB_FILE = "templates.bin"' in src)
+        finally:
+            shutil.rmtree(out, ignore_errors=True)
+
+    # 2. Where deploy.sh goes looking, read out of deploy.sh itself.
+    deploy = open(os.path.join(HERE, "deploy.sh")).read()
+    m = re.search(r'^TEMPLATE_BLOB="([^"]+)"', deploy, re.M)
+    check("deploy.sh declares TEMPLATE_BLOB", m is not None)
+    if not m:
+        return
+
+    repo = os.path.join(HERE, "..")
+    wanted = os.path.realpath(os.path.join(repo, m.group(1)))
+    written = os.path.realpath(os.path.join(rt.DEFAULT_OUT, "templates.bin"))
+    check("deploy.sh looks where record_templates.py writes",
+          wanted == written, "deploy.sh: %s   record_templates.py: %s"
+          % (wanted, written))
+
+    # 3. And the loader has to be in the module list, or the blob arrives with
+    #    nothing on the device that knows how to read it.
+    m = re.search(r'MODULES="([^"]*templates[^"]*)"', deploy)
+    check("deploy.sh copies the templates loader module", m is not None,
+          "no MODULES line lists `templates`")
+    check("the loader is written where the module loop looks",
+          os.path.realpath(rt.DEFAULT_OUT)
+          == os.path.realpath(os.path.join(repo, "src")))
+
+
 def main(argv):
     corpus = argv[1] if len(argv) > 1 else None
     print("statics-only template format (TEMPLATE_FORMAT %d, %d features/frame)"
@@ -197,6 +267,8 @@ def main(argv):
         print("       cannot miss it.")
     else:
         print("\n(pass a corpus directory to also check real audio)")
+
+    deploy_seam()
 
     print()
     if _fails:

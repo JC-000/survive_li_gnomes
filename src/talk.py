@@ -311,6 +311,22 @@ class Conversation:
             return text
 
     def greeting(self):
+        """DOCTOR's opening line. Counts as a turn, and that is load-bearing.
+
+        main() greets instead of complaining when the first press hears
+        nothing, on the grounds that a device saying "I did not hear anything"
+        before it has ever said hello reads as broken. That test is
+        `turns == 0`, so without this increment the greeting is not the first
+        turn's reply -- it is *every* failed turn's reply, and NOTHING_HEARD
+        can never appear until a press succeeds. Failing to endpoint is common
+        enough for that to matter: 49% of utterances at 8 dB SNR, 83% at 6 dB
+        (docs/speaker-independent.md).
+
+        Incremented before the engine is asked, and unconditionally, so the
+        stub path below counts too -- a board with no eliza deployed should say
+        so once and then behave like the rest of the program.
+        """
+        self.turns += 1
         if not self._ensure():
             return "STUB: no eliza module deployed."
         try:

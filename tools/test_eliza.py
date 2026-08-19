@@ -580,6 +580,81 @@ class TestVocabContract(unittest.TestCase):
             self.assertIn(self.vocab.label_of(form), self.vocab.LABELS, form)
 
 
+class TestReplPreviewsTheDevice(unittest.TestCase):
+    """tools/eliza_repl.py must hear exactly what the board hears.
+
+    The REPL is how anyone judges whether the conversation is any good without
+    a board attached, and README points at it for that. So a vocabulary of its
+    own is not a harmless convenience -- it is a preview of a device that does
+    not exist. The copy it used to carry had drifted to 40 words against the
+    device's 21 classes, and the extras were not obscure ones: NO, WANT and
+    NEED were all three explicitly retired from vocab.py (NO because it is a
+    homophone of KNOW and cost 82 points of recall), and SCHOOL and FRIEND had
+    never been in any vocabulary the spotter was given. Every reply the REPL
+    produced from one of those was a reply the board could never make.
+
+    This is the same failure tools/enrol.py had -- a hand-written word list that
+    quietly gained a retired word -- and it is pinned the same way.
+    """
+
+    def setUp(self):
+        try:
+            import vocab
+            import eliza_repl
+        except ImportError as exc:
+            self.skipTest("not importable: %s" % exc)
+        self.vocab = vocab
+        self.repl = eliza_repl
+        # Per TestVocabContract's setUp: every assertion below loops over a
+        # collection derived from vocab.py, so an empty one would pass while
+        # checking nothing.
+        self.assertGreaterEqual(len(eliza_repl.SPOTTABLE), 10,
+                                "the REPL vocabulary collapsed")
+
+    def test_it_hears_the_spoken_forms_and_nothing_else(self):
+        self.assertEqual(sorted(self.repl.SPOTTABLE),
+                         sorted(f.upper() for f in self.vocab.FORMS))
+
+    def test_the_bag_it_produces_is_the_bag_the_device_produces(self):
+        # talk.Conversation.reply puts `vocab.ECHO[label]` in the bag, so these
+        # are the only words the engine can ever see from a real press.
+        self.assertEqual(sorted(set(self.repl.SPOTTABLE.values())),
+                         sorted(set(self.vocab.ECHO.values())))
+
+    def test_merged_classes_are_modelled_not_flattened(self):
+        # SAD and SICK are one class, which is why confusing them is free. The
+        # spotter returns the class; the form that was said does not survive.
+        for form in ("sad", "sick"):
+            self.assertEqual(self.repl.to_bag(form, self.repl.SPOTTABLE), ["SAD"])
+        self.assertEqual(
+            self.repl.to_bag("i am sad and sick", self.repl.SPOTTABLE), ["SAD"])
+
+    def test_retired_and_phantom_words_are_gone(self):
+        # NO, WANT and NEED were removed from the vocabulary deliberately;
+        # SCHOOL and FRIEND were never in it. All five were in the old copy.
+        for word in ("NO", "WANT", "NEED", "SCHOOL", "FRIEND"):
+            self.assertNotIn(word, self.repl.SPOTTABLE,
+                             "%s is not in the device vocabulary" % word)
+            self.assertEqual(self.repl.to_bag(word.lower(),
+                                              self.repl.SPOTTABLE), [])
+        self.assertNotIn("SCHOOL", self.repl.NOUNS)
+        self.assertNotIn("FRIEND", self.repl.NOUNS)
+
+    def test_the_tables_are_vocab_s_own_rather_than_equal_to_them(self):
+        # Identity, not equality. Two tables that happen to agree today are the
+        # thing this test exists to prevent: PRIORITY still matched exactly
+        # while the vocabulary beside it had drifted by 19 words.
+        self.assertIs(self.repl.NOUNS, self.vocab.NOUNS)
+        self.assertIs(self.repl.PRIORITY, self.vocab.PRIORITY)
+
+    def test_an_explicit_word_list_still_overrides(self):
+        # The escape hatch for "what would a bigger vocabulary buy" has to keep
+        # working, and it maps each word to itself since it has no classes.
+        wider = dict((w, w) for w in ("REMEMBER", "BECAUSE"))
+        self.assertEqual(self.repl.to_bag("i remember because", wider),
+                         ["BECAUSE", "REMEMBER"])
+
+
 class TestAssumptionGuards(unittest.TestCase):
     """Assumption has to stay assumption, not invention."""
 

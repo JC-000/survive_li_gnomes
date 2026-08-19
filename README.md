@@ -77,12 +77,26 @@ uvx --from pyserial python tools/pull_recording.py t.wav
 uvx --from miniaudio --with pyserial python tools/mic_margin.py record run1/
 
 # 4. enrolment proper: ~10 min of saying 21 words
-uvx --from pyserial python tools/enrol.py takes/
+uvx --from pyserial python tools/enrol.py enrol-takes/
+
+# 5. turn the recordings into the template set, and deploy it
+python3 tools/record_templates.py --from enrol-takes/ --pack full
+./tools/deploy.sh eliza
 ```
 
 Steps 1 and 2 calibrate what step 4 depends on, and step 3 says whether the
 recogniser has any margin at all before you spend ten minutes on it. Running
 them out of order risks a whole vocabulary recorded at the wrong sample rate.
+
+**Do not enrol into `takes/`.** It looks like the obvious name and it is
+already taken: `takes/` and `takes-oov/` hold the ten keywords and twelve
+negatives recorded from a real person through this board, and they are the
+held-out test set that every speaker-independence figure in
+[docs/speaker-independent.md](docs/speaker-independent.md) is measured against.
+`tools/corpus.py` goes to some trouble to keep them out of training — there is
+no flag that mixes them — and re-recording over them would undo that quietly,
+since a fresh `manifest.json` in the same schema is exactly what `enrol.py`
+writes. They are gitignored, so there is nothing to restore them from.
 
 Try the conversation half without any hardware:
 
