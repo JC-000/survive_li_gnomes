@@ -636,7 +636,23 @@ In the order they matter.
    line.
 5. **The 6-op flash figure** came from a scratch build with a hand-trimmed
    resolver. If 61.5 KiB ever matters, trim the resolver properly and re-measure.
-6. **`emlearn_cnn_int8` does not have to go**, and the version pin is what
+6. **The binding does not expose the raw int8 output tensor**, and one thing
+   currently depends on that being unnecessary. `tflm_shim.h` has the int8
+   pointer and both output quantisation parameters; `modtflm.c` binds none of
+   them, so `run()` returns dequantised floats only. Every device dump
+   therefore recovers the model's output bytes as `round(p * 256)`, which is
+   exact **only because `si_real` quantises its output at scale 2^-8, zero
+   point -128** -- a property of this model, not of the module. A retrain onto
+   an awkward scale would silently invalidate it, and the byte comparison would
+   fail while blaming the board.
+   Mitigated rather than fixed: `tools/make_tflm_cases.py` checks the round
+   trip against the library's raw int8 on all 30 cases, and
+   `tools/tflm_probe.py` section 2b checks on the device that every score lands
+   on a multiple of 1/256 and refuses to emit a dump otherwise (measured worst
+   departure: exactly 0). **The fix is to bind the int8 pointer**, which makes
+   it structural instead of fortunate and costs a firmware rebuild -- so it is
+   the first thing to do after the bench, not before it. (Raised by fw-16mb.)
+7. **`emlearn_cnn_int8` does not have to go**, and the version pin is what
    keeps that true. The vendored `.mpy` is a **native** module at mpy 6.3 /
    `armv7emsp`, and native modules are rejected unless `MPY_VERSION` and
    `MPY_SUB_VERSION` both match. v1.28.0 is 6.3, so it stays loadable in this

@@ -585,9 +585,19 @@ def cmd_device_scores(path, only_set=None, only_runtime=None):
         print_per_class(rows, clean[1], clean[0])
         print("\n  the gates to ship, from the device's own numbers:")
         print("    THRESHOLD = %.3f, MARGIN = %.4f" % (clean[1], clean[0]))
-    print("\nFor comparison, the host `.tflite` operating point currently in "
-          "`si_spot.py`:\n  THRESHOLD 0.35, MARGIN 2/256, TIE_FLOOR 0.49 "
-          "-- precision 1.000, recall 0.500 on these 22 takes.")
+    # Name the kernel set. "The host .tflite" is ambiguous -- `tf.lite.
+    # Interpreter` dispatches to XNNPACK, plain CPU or reference kernels
+    # depending on delegates, and the three give different probabilities for
+    # the same model. The device runs the reference kernels; the operating
+    # point in `si_spot.py` was measured under XNNPACK. Printing the number
+    # without the runtime beside it is what made that invisible for a day.
+    print("\nFor comparison, the same model on the host:")
+    print("  XNNPACK kernels   threshold 0.598 -> precision 1.000, recall 0.500")
+    print("  reference kernels threshold 0.637 -> precision 1.000, recall 0.300")
+    print("  (`si_spot.py` currently ships THRESHOLD 0.35, MARGIN 2/256, "
+          "TIE_FLOOR 0.49)")
+    print("  Top-1 is 0.700 under both -- the model is identical and only the "
+          "threshold moves.")
     return 0
 
 

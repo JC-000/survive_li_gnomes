@@ -64,6 +64,7 @@ wrong, and a scorer that does not filter on `set=` will silently treat all 8 as
 must-stay-silent negatives.
 """
 
+import array as array_module
 import gc
 import sys
 import time
@@ -128,6 +129,36 @@ def quantised(scores, n):
     return out
 
 
+def quantisation_holds(scores, n):
+    """Is every score an exact multiple of 1/256? -> (ok, worst departure)
+
+    `q = round(p * 256)` recovers the model's output bytes exactly **only**
+    because `si_real` quantises its output at scale 2^-8, zero point -128, so
+    every score is k/256 for an integer k and all 256 of those are exactly
+    representable in float32. That is a property of this model, not of the
+    module: a retrain that lands on an awkward output scale would make every
+    `q=` in this dump quietly wrong, and the byte comparison would then fail
+    while blaming the board.
+
+    The module exposes neither the raw int8 tensor nor the output scale
+    (`tflm_shim.h` has both; `modtflm.c` does not bind them -- see
+    docs/tflm-usermod.md), so the assumption cannot be read off the model. It
+    can be *detected*, which is what this does: if the scale is not 2^-8, the
+    scores stop landing on multiples of 1/256 and the departure is obvious.
+
+    (fw-16mb raised this. They are right that plumbing the int8 pointer through
+    would make it structural instead of fortunate; that needs a firmware
+    rebuild, so tonight it is checked rather than assumed.)
+    """
+    worst = 0.0
+    for i in range(n):
+        scaled = scores[i] * 256
+        departure = abs(scaled - int(scaled + 0.5))
+        if departure > worst:
+            worst = departure
+    return worst < 1e-4, worst
+
+
 def score_line(runtime, case_set, name, q, frames, clipped, micros):
     parts = ["SCORE", "runtime=" + runtime, "set=" + case_set, "name=" + name]
     if frames is not None:
@@ -188,6 +219,29 @@ dims = model.output_dimensions()
 if dims[0] != N_CLASSES:
     raise SystemExit("model has %d outputs, expected %d -- wrong model staged"
                      % (dims[0], N_CLASSES))
+
+# The output quantisation this probe's `q=` depends on. Checked once, on a real
+# inference, before any SCORE line is emitted -- a dump of wrong integers is
+# worse than no dump, because it would be compared byte for byte and the board
+# would be blamed.
+rule("2b. the output quantisation q= depends on")
+_probe_handle = open(CASES + "/" + manifest[0][1] + ".bin", "rb")
+try:
+    _probe_patch = _probe_handle.read()
+finally:
+    _probe_handle.close()
+_probe_scores = array_module.array("f", (0.0 for _ in range(N_CLASSES)))
+model.run(_probe_patch, _probe_scores)
+_ok, _worst = quantisation_holds(_probe_scores, N_CLASSES)
+print("scores land on multiples of 1/256 : %s (worst departure %.9f)"
+      % (_ok, _worst))
+if not _ok:
+    raise SystemExit(
+        "This model's output is NOT quantised at 1/256, so `q = round(p*256)` "
+        "does not recover its output bytes and every SCORE line below would be "
+        "wrong. Refusing to emit a dump. See quantisation_holds() -- the fix is "
+        "to bind the shim's int8 output pointer in modtflm.c.")
+print("so `q = round(p * 256)` recovers the model's own output bytes exactly")
 
 # `blob` is deliberately still bound. tflm.new() copies the model into the
 # arena, so it is not needed -- but cnn_probe.py has twice been bitten by a
