@@ -1,14 +1,28 @@
 # survive_li_gnomes
 
-A Magic 8-Ball on a persistent e-paper display. Press a button, hear it shake,
-get an answer. The answer stays on screen with the power off, so it survives the
-intermittent power this thing lives on.
+The **Lithium Gnomes** have stolen the world's electrolyte. Batteries are
+heirlooms, mains power is a rumour, and compute is too precious to waste on
+anything that does not keep you alive. What survives on one small board with a
+display that needs no power to keep showing you the answer:
+
+- **A Magic 8-Ball — leadership.** Press a button, hear it shake, get a
+  decision. The answer stays on the e-paper with the power off, so guidance
+  survives the outage that follows every question.
+- **A push-to-talk ELIZA — companionship.** Hold the screen, speak, and
+  Weizenbaum's 1966 DOCTOR listens (a 30 KB neural network spots the word that
+  matters) and answers, on paper and out loud. Therapy at 150 MHz.
+
+Two separate programs, one board, deployed one at a time — the deploy script
+decides which one greets the end of the world. Both obey the same power rules:
+boot never touches the panel, nothing is ever written to flash at runtime, and
+everything degrades gracefully — no speaker, no voice pak, no model: still a
+working toy.
 
 Hardware: **Waveshare RP2350-Touch-ePaper-1.54** — RP2350A, 16 MB flash,
 200 × 200 SSD1681 e-paper, FT6336U touch, SHTC3, PCF85063A RTC, ES8311 codec,
-microSD, Li-ion battery.
+microSD, Li-ion battery (guard it).
 
-## Install
+## The Magic 8-Ball: leadership
 
 The host needs nothing but `uv` — `mpremote` runs via `uvx`.
 
@@ -18,8 +32,6 @@ The host needs nothing but `uv` — `mpremote` runs via `uvx`.
 
 That copies the device modules and resets the board. `main.py` autoruns at
 power-on, so there is nothing else to start.
-
-## Use
 
 Press the **POWER key**, **BOOTSEL**, or **tap the screen** — any of the three
 asks the ball. The board has no brightness button; e-paper has no backlight.
@@ -45,9 +57,9 @@ To change a sampled clip, edit `tools/build_clips.sh`, run it, then
 The occasional flashing black/white refresh is normal for e-paper, not a fault —
 it is what clears ghosting.
 
-## The other program: push-to-talk ELIZA
+## Push-to-talk ELIZA: companionship
 
-A second program shares the board. Hold the screen, wait for the chirp, say
+Hold the screen, wait for the chirp, say
 something, let go — Weizenbaum's 1966 DOCTOR answers on the e-paper, **and out
 loud** through the speaker.
 

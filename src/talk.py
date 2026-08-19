@@ -2,7 +2,7 @@
 
 Hold the screen (or the POWER key), say something, let go. The board endpoints
 what it heard, spots a keyword from a small vocabulary, runs it through a real
-DOCTOR rule set and puts the reply on the e-paper.
+DOCTOR rule set, puts the reply on the e-paper and speaks it.
 
 Deployed *as* `main.py` -- `./tools/deploy.sh eliza` -- because main.py is what
 autoruns at power-on. The Magic 8-Ball's `src/main.py` is untouched and the two
@@ -23,11 +23,12 @@ And one that is new: **the codec is configured for 16 kHz capture**, so the
 half an octave low and, more to the point, the microphone would hear them --
 see the playback gate in `vad`.
 
-The keyword spotter itself is not here yet: `_spot_keyword` calls into a
-`spotter` module that the MFCC/DTW work will provide (docs/speech-design.md).
-Until it exists every turn takes DOCTOR's no-keyword path, which is a real ELIZA
-behaviour rather than an error state, so the rest of the loop -- capture,
-endpointing, the engine, the panel -- runs and can be judged.
+The keyword spotter is `si_spot`: a speaker-independent CNN running on the
+firmware's TFLite Micro usermod, with the parked DTW matcher (`spotter` +
+enrolled `templates`) as the fallback -- see `_spot_keyword` for the order and
+docs/speaker-independent.md for how it got that way. When neither recognises
+anything the turn takes DOCTOR's no-keyword path, which is a real ELIZA
+behaviour rather than an error state.
 """
 
 import time
