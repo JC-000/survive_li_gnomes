@@ -322,15 +322,21 @@ class Recorder:
                 self._audio.dout_pio_init()
                 self._dout_ready = True
             # re-clock down for the clip...
+            # Volume 82, NOT the chirp's 90: speech at 90 overdrives this
+            # amp and speaker (bench-measured yesterday at these peaks; the
+            # chirp gets away with it only because it is a 300 ms beep).
             self._codec.init(mclk_freq=rate * 256, sample_freq=rate,
-                             res_in=16, res_out=16, volume=CHIRP_VOLUME,
+                             res_in=16, res_out=16, volume=82,
                              mic_gain=MIC_GAIN)
             self._codec.mute(False)
             self._audio.mclk_freq = rate * 256
             self._audio.mclk_pio_init()
             self._pa.value(1)
-            mv = memoryview(self.buf)
-            self._audio.dma_play_words_async(mv[: n_words * 2])
+            # count=n_words explicitly: the DMA's default count is ELEMENTS
+            # of the buffer it is handed, and this buffer is int16 -- so the
+            # first version played DOUBLE the clip, the second half being
+            # stale capture audio. That was the "burst of static".
+            self._audio.dma_play_words_async(self.buf, count=n_words)
             while not self._audio.play_finished():
                 time.sleep_ms(10)
             time.sleep_ms(CHIRP_SETTLE_MS)
