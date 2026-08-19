@@ -43,14 +43,20 @@ INC="-I$TFLM -I$TFLM/third_party/flatbuffers/include \
 
 # Exactly the rp2 port's own architecture flags for RP2350 (ports/rp2 with
 # PICO_PLATFORM=rp2350 builds -mcpu=cortex-m33 with softfp and fpv5-sp-d16).
-ARCH="-mcpu=cortex-m33 -mthumb -mfloat-abi=softfp -mfpu=fpv5-sp-d16"
+# The rp2 port's own flags for RP2350, read off fw-16mb's generated build
+# rather than reconstructed: `-march=armv8-m.main+fp+dsp` with `-mcmse`, not
+# `-mfpu=fpv5-sp-d16`. Equivalent FP configuration, but measure with what the
+# firmware actually uses.
+ARCH="${TFLM_ARCH:--mcpu=cortex-m33 -mthumb -march=armv8-m.main+fp+dsp -mfloat-abi=softfp -mcmse}"
+OPT="${TFLM_OPT:--O2}"
 # TFLM_DEFS lets the caller measure the release configuration:
 #   TFLM_DEFS=-DTF_LITE_STRIP_ERROR_STRINGS ./tools/size_tflm_m33.sh
 # which drops every diagnostic string and the newlib printf machinery they drag
 # in behind them. Worth ~47 KB, and worth having *off* during bring-up.
 DEFS="-DTF_LITE_STATIC_MEMORY -DTF_LITE_MCU_DEBUG_LOG -DNDEBUG ${TFLM_DEFS:-}"
-COMMON="$ARCH $DEFS $INC -O2 -ffunction-sections -fdata-sections -w"
-CXXFLAGS="-std=c++17 -fno-rtti -fno-exceptions -fno-threadsafe-statics $COMMON"
+COMMON="$ARCH $DEFS $INC $OPT -ffunction-sections -fdata-sections -w"
+CXXFLAGS="-std=c++17 -fno-rtti -fno-exceptions -fno-threadsafe-statics \
+          -fno-use-cxa-atexit -fno-unwind-tables $COMMON"
 CFLAGS="-std=c11 $COMMON"
 
 collect() { find "$1" -maxdepth 1 -name "$2" 2>/dev/null | sort; }

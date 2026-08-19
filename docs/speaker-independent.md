@@ -17,6 +17,14 @@ unknown. It worked, on the one speaker it has been tried on.
 > control re-run on the later American-inclusive roster. Every figure measured,
 > none estimated.
 >
+> **The CNN's precision/recall figures were computed with TFLite's XNNPACK
+> kernels; the device runs the reference kernels, where the same model reaches
+> precision 1.000 at recall 0.300 rather than 0.500.** Top-1 is 0.700 under
+> both — the model is identical and only the threshold placement moves. See
+> [three runtimes](#tflitetflite-is-three-runtimes-and-the-recorded-operating-point-came-from-the-wrong-one).
+> The figures below are left as measured rather than restated, because they are
+> accurate about what was run.
+>
 > | | top-1 | precision 1.000 at recall |
 > | --- | --- | --- |
 > | CNN, synthetic held-out voices | 0.626 | 0.013 |
@@ -200,6 +208,126 @@ verdicts.
 Note what that costs the usual way of reporting this: on a single accuracy
 figure these two systems are **indistinguishable**, and the whole difference
 lives in the axis that figure averages away.
+
+## Decided in advance: the morning's TFLM/TinyMaix A/B
+
+Written **before the data exists**, because every number today that got to pick
+its own success criterion afterwards misled somebody. If the morning's results
+argue for different criteria, that argument has to be made explicitly and
+recorded, not absorbed.
+
+### The primary criterion is a mechanism, not an accuracy
+
+**Ship TFLM if it is numerically equivalent to the host `.tflite` computed with
+the REFERENCE kernels**, checked per-utterance over all 22 takes: identical
+argmax on every one, and every probability within one output quantisation step
+(1/256).
+
+**"The host `.tflite`" was ambiguous and the ambiguity mattered.** See
+[the three host runtimes](#tflitetflite-is-three-runtimes-and-the-recorded-operating-point-came-from-the-wrong-one)
+below: `tf.lite.Interpreter` is three different kernel sets, TFLM matches the
+reference one, and equivalence measured against the default (XNNPACK) would
+reject the correct runtime.
+
+That is the whole prize, and it is decidable at n=22 *because it is a
+per-utterance exactness check rather than a rate*. If it holds, the operating
+point in this document transfers to the device by construction, the entire
+"tuned against a model we do not ship" problem disappears, and every future
+threshold can be tuned on the host. `docs/cnn-on-device.md` records that
+TinyMaix is **not** equivalent — 3 of 8 patches disagree, and the divergence is
+scatter rather than a shift, so re-tuning cannot fully recover it.
+
+**The prediction as first written was "if bit-exactness holds, the retune is a
+no-op, and 0.598 / precision 1.000 / recall 0.500 becomes the device's operating
+point unchanged."** It was wrong, and it was wrong before the board was
+involved — see below. Bit-exactness does hold, against the reference kernels;
+the operating point still moves, because 0.598 was measured under a different
+kernel set. **The corrected prediction: the retune is required, cheap, and does
+not need hardware.**
+
+## `tf.lite.Interpreter` is three runtimes, and the recorded operating point came from the wrong one
+
+`tf.lite.Interpreter` dispatches to different kernels depending on delegates,
+and this is invisible at the call site. Same model file, same 22 takes, same
+patches, three host kernel sets:
+
+| host kernel set | recommended threshold | precision | recall | top-1 |
+| --- | --- | --- | --- | --- |
+| `default` (XNNPACK delegate) | **0.598** | 1.000 | **0.500** | 0.700 |
+| `nodelegate` (optimised CPU) | 0.594 | 1.000 | 0.500 | 0.700 |
+| **`ref` (reference kernels) — what TFLM computes** | **0.637** | 1.000 | **0.300** | 0.700 |
+
+Found by fw-tflm, reproduced here independently with
+`experimental_op_resolver_type`. **Every operating point in this document was
+measured under XNNPACK, and the device runs the reference kernels.**
+
+Read the columns carefully, because the honest reading is narrower than the
+alarming one:
+
+- **argmax agrees 22 of 22 across all three**, and **top-1 is 0.700 under all
+  three**. The network's decisions are identical. Nothing about the model
+  changed.
+- What moved is **where a threshold can be placed**. Max probability difference
+  is 0.031 — eight counts of 1/256, the same magnitude si-device measured for
+  TinyMaix.
+- 0.500 against 0.300 is **two utterances of ten**, which this document's own
+  A/B criteria call noise. This is not a recall regression; it is a threshold
+  that does not transfer.
+
+### The real fragility this exposed, and it is not about kernels
+
+The whole difference is **one utterance**: `problem_01.wav` — a negative —
+scores `brother` at **0.598 under XNNPACK and 0.625 under the reference
+kernels**. Any clean threshold must sit above it, and two correct answers live
+in between.
+
+So the recall-0.500 operating point rested on a false fire sitting **0.027
+below the threshold**, and nothing in the reporting said so. That is a far more
+important fact than which kernel set produced it: **an operating point whose
+precision depends on one negative scoring just under the line is not a robust
+operating point**, and it would have been broken by any small perturbation —
+a different room, a different take, this kernel change.
+
+`problem` → `brother` also belongs in the near-rime family with
+another/other/wonder → brother/father/mother, which is now the single most
+persistent failure mode in the project.
+
+
+### Accuracy must not decide this, and here is the number that says so
+
+At 10 keywords and 12 negatives, a one- or two-utterance difference is noise —
+demonstrated three times today (the width sweep, the take-sensitivity
+correction, the jitter retrain). So the A/B is **not** decided by whichever
+runtime scores higher.
+
+Fixed thresholds for acting on accuracy at all:
+
+| observation | verdict |
+| --- | --- |
+| any **new false fire on the 12 negatives** that the other runtime does not have | **disqualifying** for that runtime, on its own |
+| a difference of **>= 4 of 10** keywords | worth acting on |
+| a difference of 1-3 keywords | **noise; ignore it** |
+
+The asymmetry is deliberate and is the project's standing rule: a miss is a
+deflection and a false fire ends the illusion, so one is worth acting on
+immediately and the other needs four.
+
+### If TFLM is not equivalent
+
+Then it is a straight swap of one non-equivalent runtime for another, and the
+default is **stay on TinyMaix** — switching costs a re-tune and a
+re-verification for no measured gain. TFLM would have to win on cost to justify
+it: materially faster than 66.6 ms, or materially smaller than 43.5 KB resident,
+with "materially" meaning enough that somebody would notice on the device.
+
+### The fallback, and it is already built
+
+If the byte check fails, `tools/si_eval.py --device-scores <dump>` re-derives
+the gates from **what the board actually produced**. It runs the device's own
+numbers through the same `measure`, `sweep`, `recommend`, `print_steals` and
+`print_per_class` as everything else — one implementation, different input —
+and prints the THRESHOLD and MARGIN to ship. Verified against a simulated
+serial capture end to end.
 
 ## The first fully-labelled live session
 

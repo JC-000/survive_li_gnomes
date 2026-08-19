@@ -21,6 +21,13 @@
 if(NOT DEFINED TFLM_DIR)
     set(TFLM_DIR ${CMAKE_CURRENT_LIST_DIR}/../../../vendor/tflm)
 endif()
+# Normalise before anything uses it. `-ffile-prefix-map` below matches
+# __FILE__ as a literal string prefix, and __FILE__ carries the path the
+# compiler was handed via -I -- which cmake normalises. Leave TFLM_DIR as
+# `.../usermod/tflm/../../../vendor/tflm` and the flag appears on every compile
+# line, matches nothing, and the paths stay in the image. It looks fixed in the
+# build log and is not; verify with `strings firmware.elf | grep vendor/tflm`.
+get_filename_component(TFLM_DIR "${TFLM_DIR}" ABSOLUTE)
 if(NOT EXISTS ${TFLM_DIR}/tensorflow/lite/micro/micro_interpreter.cpp)
     message(FATAL_ERROR
         "TFLM_DIR=${TFLM_DIR} has no TFLM tree. Run tools/fetch_tflm.sh first.")
@@ -95,6 +102,20 @@ target_compile_definitions(tflm_lib PUBLIC
     NDEBUG
 )
 
+# TFLM's diagnostic strings, and the newlib printf machinery they drag in
+# behind them, are worth 46,336 bytes of the image -- measured, by building
+# this both ways against the real firmware. They are on by default because
+# during bring-up "Failed to allocate tail memory. Requested: 816" is the
+# difference between a diagnosis and a guess, and off is a one-line change:
+#
+#   TFLM_STRIP_ERROR_STRINGS=1 USER_C_MODULES=... ./tools/build_firmware.sh
+#
+# Strip them once the arena is sized and the model is settled.
+if(TFLM_STRIP_ERROR_STRINGS)
+    target_compile_definitions(tflm_lib PUBLIC TF_LITE_STRIP_ERROR_STRINGS)
+    message(STATUS "tflm: error strings stripped")
+endif()
+
 # -fno-rtti/-fno-exceptions are what TFLM is written for and what every
 # embedded integration of it uses; without them the image pulls in the
 # unwinder. -Wno-error because TFLM does not compile warning-clean under
@@ -104,16 +125,42 @@ target_compile_definitions(tflm_lib PUBLIC
 # are integer end to end, but the quantisation multipliers are computed in
 # double at AllocateTensors, and that is exactly where a relaxed
 # floating-point mode would break the bit-exactness the module is for.
+# These are PRIVATE on tflm_lib and not INTERFACE on usermod_tflm, which is the
+# distinction that matters: compile options set INTERFACE on the usermod target
+# reach `modtflm.c` and nothing else. TFLM compiles here, so the flags have to
+# be here. (fw-16mb flagged the reverse mistake as the likely one.)
+#
+# -fno-use-cxa-atexit and -fno-unwind-tables match what the rp2 port sets for
+# its own C++, and are not inherited: `-Wall -Werror` and the port's C++ flags
+# are PRIVATE on the `firmware` target, so a separate static library gets
+# neither. Without -fno-use-cxa-atexit a static object with a destructor
+# registers through __cxa_atexit and wants __dso_handle.
 target_compile_options(tflm_lib PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>
     $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>
     $<$<COMPILE_LANGUAGE:CXX>:-fno-threadsafe-statics>
+    $<$<COMPILE_LANGUAGE:CXX>:-fno-use-cxa-atexit>
+    $<$<COMPILE_LANGUAGE:CXX>:-fno-unwind-tables>
     -Wno-error
     -Wno-error=float-conversion
     -Wno-error=double-promotion
     -Wno-error=sign-compare
     -Wno-error=unused-const-variable
     -Wno-error=maybe-uninitialized
+    # TFLM's assertion macros bake __FILE__ into the image. Unmapped that is 19
+    # absolute host paths and 2,133 bytes of flash -- but the flash is the minor
+    # half. The major half is that the same sources from a different checkout
+    # directory produce a different binary, which quietly voids any
+    # byte-for-byte reproducibility claim about the firmware. (Found by fw-16mb
+    # in a string diff of the two images.)
+    -ffile-prefix-map=${TFLM_DIR}=tflm
+    -ffile-prefix-map=${CMAKE_CURRENT_LIST_DIR}=usermod/tflm
+    # -O2 rather than the port's -Os, and it is not free: measured on this
+    # target, -O2 costs 15,948 bytes of flash over -Os (62,332 against 46,384,
+    # error strings stripped). Taken because inference time on the board is the
+    # one figure this module still has no measurement for, and because flash is
+    # the resource there is most of -- 710 KB free in the reserve. If the board
+    # turns out to be fast enough anyway, -Os is the cheaper default.
     -O2
 )
 

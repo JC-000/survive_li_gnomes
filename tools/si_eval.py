@@ -416,6 +416,118 @@ def load_takes(takes_dir, cache=None, jobs=None):
     return x, truths, names, rows
 
 
+# --- device score dumps ---------------------------------------------------
+
+SCOREDUMP_TAG = "SCORE"
+
+
+def read_score_dump(path, classes=CLASSES, only_set=None, only_runtime=None):
+    """A device's own printed scores -> [(name, probs)], in class order.
+
+    **Format, and it is deliberately dull.** One tagged line per utterance,
+    anywhere in the stream:
+
+        SCORE name=<file> frames=<n> clipped=<n> p=<c0>,<c1>,...,<c21>
+
+    - Lines that do not begin with `SCORE` are **ignored**, so a whole serial
+      capture can be pasted in unedited. That is the point: a format that needs
+      a human to cut the log out of the transcript is a format that gets cut
+      wrong at 08:30 with somebody waiting.
+    - `p=` is exactly `len(classes)` floats, comma-separated, in the class order
+      of the model's `.json`. Six decimals is plenty -- the outputs are
+      multiples of 1/256 -- but any parseable float is accepted.
+    - `frames` and `clipped` are optional and carried through for diagnosis.
+    - **`set=` must be filtered on when a dump mixes populations, and it is not
+      optional to think about.** A dump may carry `set=takes` (real utterances,
+      ground truth recoverable from the filename) alongside `set=bitexact` (the
+      `kw_unknown_*` patches, whose names encode *an earlier model's
+      predictions* and are not ground truth at all). Scored together, those 8
+      are silently treated as must-stay-silent negatives, and the sweep then
+      reports a number that is right for a partly fictional reason. Pass
+      `only_set="takes"`.
+    - `runtime=` likewise, when one dump carries two runtimes for the same
+      inputs -- which is the paired form worth asking for.
+    - An optional `q=` field may carry the raw quantised output bytes as
+      integers instead of, or as well as, `p=`. If both are present `q=` wins,
+      because it is exact and `p=` has been through a printf.
+
+    Returns rows in file order. Duplicated names are kept, not merged: a device
+    scoring the same take twice is data about the device.
+    """
+    rows = []
+    n_fields = len(classes)
+    with open(path) as fh:
+        for lineno, line in enumerate(fh, 1):
+            line = line.strip()
+            if not line.startswith(SCOREDUMP_TAG):
+                continue
+            fields = {}
+            for token in line[len(SCOREDUMP_TAG):].strip().split():
+                if "=" in token:
+                    k, v = token.split("=", 1)
+                    fields[k] = v
+            name = fields.get("name")
+            if name is None:
+                raise ValueError("%s:%d: SCORE line has no name=" % (path, lineno))
+            if "q" in fields:
+                raw = [int(v) for v in fields["q"].split(",") if v != ""]
+                probs = [v / 256.0 for v in raw]
+            elif "p" in fields:
+                probs = [float(v) for v in fields["p"].split(",") if v != ""]
+            else:
+                raise ValueError("%s:%d: SCORE line has neither p= nor q="
+                                 % (path, lineno))
+            if len(probs) != n_fields:
+                raise ValueError(
+                    "%s:%d: %d scores for %d classes -- the device and this "
+                    "harness disagree about the model, which is exactly the "
+                    "mismatch this check exists to stop"
+                    % (path, lineno, len(probs), n_fields))
+            if only_set is not None and fields.get("set") != only_set:
+                continue
+            if only_runtime is not None and fields.get("runtime") != only_runtime:
+                continue
+            rows.append({"name": name, "probs": probs,
+                         "set": fields.get("set"),
+                         "runtime": fields.get("runtime"),
+                         "frames": int(fields.get("frames", 0)),
+                         "clipped": int(fields.get("clipped", 0))})
+    if not rows:
+        raise ValueError("%s: no `%s` lines found%s"
+                         % (path, SCOREDUMP_TAG,
+                            "" if only_set is None and only_runtime is None
+                            else " matching that set/runtime"))
+    return rows
+
+
+def rows_from_dump(dump, truth_for_name):
+    """Device dump -> the (truth, ranked, name) shape the sweep already takes.
+
+    So a device's scores go through **the same** `measure`, `sweep`,
+    `recommend`, `print_steals` and `print_per_class` as everything else. The
+    retune is then not a second implementation that has to be trusted -- it is
+    the existing one with a different input.
+    """
+    import numpy as np
+    probs = np.array([d["probs"] for d in dump], dtype="float64")
+    names = [d["name"] for d in dump]
+    return rows_from_probs(probs, [truth_for_name(n) for n in names], names)
+
+
+def truth_for_take_name(name):
+    """`mother_01.wav` -> "mother"; anything not a keyword -> must stay silent.
+
+    The same convention `load_takes` uses, factored out so a device dump can be
+    scored without the WAVs being present.
+    """
+    form = os.path.basename(name)
+    if form.endswith(".wav"):
+        form = form[:-4]
+    form = form.rsplit("_", 1)[0].lower()
+    label = vocab.label_of(form)
+    return label if label else None
+
+
 def predict(model_path, x):
     """int8 patches -> probabilities, from a .tflite or a .keras file."""
     if model_path.endswith(".tflite"):
@@ -429,6 +541,55 @@ def predict(model_path, x):
 
 
 # --- CLI -------------------------------------------------------------------
+
+def cmd_device_scores(path, only_set=None, only_runtime=None):
+    """Retune the gates against scores the device printed.
+
+    This is the fallback path for the morning: if the device's arithmetic is
+    verified bit-identical to the host's, the operating point transfers by
+    construction and this is unnecessary. If it is not, every threshold in
+    `docs/speaker-independent.md` was tuned on a model the board does not run,
+    and this re-derives them from what it does.
+    """
+    dump = read_score_dump(path, only_set=only_set, only_runtime=only_runtime)
+    rows = rows_from_dump(dump, truth_for_take_name)
+    n_kw = sum(1 for r in rows if isinstance(r[0], str))
+    print("device scores: %s%s%s"
+          % (path,
+             "" if only_set is None else "  set=%s" % only_set,
+             "" if only_runtime is None else "  runtime=%s" % only_runtime))
+    sets = sorted(set(d["set"] for d in dump if d["set"]))
+    runtimes = sorted(set(d["runtime"] for d in dump if d["runtime"]))
+    if only_set is None and len(sets) > 1:
+        print("WARNING: this dump mixes sets %s and none was selected. If any "
+              "of them lack ground truth, the numbers below are partly "
+              "fiction. Pass --set." % ", ".join(sets))
+    if only_runtime is None and len(runtimes) > 1:
+        print("WARNING: this dump mixes runtimes %s and none was selected; "
+              "they are being scored as one population. Pass --runtime."
+              % ", ".join(runtimes))
+    print("%d utterances (%d in-vocabulary, %d must stay silent)"
+          % (len(rows), n_kw, len(rows) - n_kw))
+    dropped = [d["name"] for d in dump if d["frames"] == 0]
+    if dropped:
+        print("%d reported 0 frames: %s" % (len(dropped), ", ".join(dropped[:6])))
+    acc, hit, n = top1_accuracy(rows)
+    print("top-1 over in-vocabulary utterances: %.3f (%d of %d)" % (acc, hit, n))
+    uacc, uhit, un = unknown_accuracy(rows)
+    print("must-stay-silent classified `unknown` outright: %.3f (%d of %d)"
+          % (uacc, uhit, un))
+    print_sweep(rows, "threshold sweep, DEVICE scores")
+    print_steals(rows)
+    clean, _ = recommend(rows)
+    if clean:
+        print_per_class(rows, clean[1], clean[0])
+        print("\n  the gates to ship, from the device's own numbers:")
+        print("    THRESHOLD = %.3f, MARGIN = %.4f" % (clean[1], clean[0]))
+    print("\nFor comparison, the host `.tflite` operating point currently in "
+          "`si_spot.py`:\n  THRESHOLD 0.35, MARGIN 2/256, TIE_FLOOR 0.49 "
+          "-- precision 1.000, recall 0.500 on these 22 takes.")
+    return 0
+
 
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -445,9 +606,23 @@ def main(argv):
                          "threshold as a result")
     ap.add_argument("--cache", default=None)
     ap.add_argument("--jobs", type=int, default=None)
+    ap.add_argument("--device-scores", default=None,
+                    help="a device score dump (see read_score_dump). Sweeps "
+                         "the gates against what the board actually produced "
+                         "instead of against the host model, and skips the "
+                         "synthetic evaluation entirely.")
+    ap.add_argument("--set", default=None,
+                    help="only score SCORE lines with this set= tag. Required "
+                         "when a dump mixes populations that do not all carry "
+                         "ground truth.")
+    ap.add_argument("--runtime", default=None,
+                    help="only score SCORE lines with this runtime= tag")
     ap.add_argument("--split", default="val",
                     help="which manifest split is the held-out voices")
     args = ap.parse_args(argv[1:])
+
+    if args.device_scores:
+        return cmd_device_scores(args.device_scores, args.set, args.runtime)
 
     print("model: %s" % args.model)
     print("feature key: %s" % si_features.feature_key())

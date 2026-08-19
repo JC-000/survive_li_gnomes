@@ -74,16 +74,40 @@ TOOLCHAIN_SHA256="${TOOLCHAIN_SHA256:-c7c78ffab9bebfce91d99d3c24da6bf4b81c01e16c
 cd "$(dirname "$0")/.."
 REPO="$(pwd)"
 
+# Every path below is made absolute against the repo root, because a relative
+# one does not survive the trip. Both ways it fails were found by someone
+# using this script, and neither looks like a path problem:
+#
+#   USER_C_MODULES=firmware/usermod/tflm/micropython.cmake
+#     -> the rp2 Makefile hands it to cmake unchanged, cmake resolves it
+#        against ports/rp2, and the error names a path nobody wrote:
+#        "USER_C_MODULES doesn't exist: .../ports/rp2/firmware/usermod/..."
+#
+#   BUILD_DIR=build/mpy-16mb-tflm
+#     -> worse, because it fails *late*: `make -C ports/rp2` resolves it
+#        against ports/rp2, the whole image builds there quite happily, and
+#        then the copy at the end misses:
+#        "cp: build/mpy-16mb-tflm/firmware.uf2: No such file or directory"
+#        Exit 1 on a successful build, with a good .uf2 buried in the
+#        MicroPython checkout that build/ is free to delete.
+abspath() {
+    case "$1" in
+        /*) printf '%s\n' "$1" ;;
+        "") printf '%s\n' "" ;;
+        *)  printf '%s\n' "$REPO/$1" ;;
+    esac
+}
+
 BOARD_DIR="$REPO/firmware/boards/$BOARD"
-MPY_DIR="${MPY_DIR:-$REPO/build/micropython}"
-BUILD_DIR="${BUILD_DIR:-$REPO/build/mpy-16mb}"
-TOOLCHAIN_DIR="${TOOLCHAIN_DIR:-$REPO/build/toolchain}"
-OUT="${OUT:-$REPO/firmware/$BOARD-$MPY_VERSION-16MB.uf2}"
+MPY_DIR="$(abspath "${MPY_DIR:-$REPO/build/micropython}")"
+BUILD_DIR="$(abspath "${BUILD_DIR:-$REPO/build/mpy-16mb}")"
+TOOLCHAIN_DIR="$(abspath "${TOOLCHAIN_DIR:-$REPO/build/toolchain}")"
+OUT="$(abspath "${OUT:-$REPO/firmware/$BOARD-$MPY_VERSION-16MB.uf2}")"
 
 # The hook the TensorFlow Lite Micro work needs. An empty USER_C_MODULES is the
 # same build as no USER_C_MODULES, so this costs nothing until something uses
 # it, and means a usermod does not arrive as a change to this script.
-USER_C_MODULES="${USER_C_MODULES:-}"
+USER_C_MODULES="$(abspath "${USER_C_MODULES:-}")"
 
 [ -d "$BOARD_DIR" ] || { echo "no board definition at $BOARD_DIR" >&2; exit 2; }
 
@@ -166,6 +190,29 @@ USER_C_MODULES= make -C "$MPY_DIR/mpy-cross"
 echo "building $BOARD, micropython $MPY_VERSION, $(arm-none-eabi-gcc -dumpversion)"
 if [ -n "$USER_C_MODULES" ]; then
     echo "  with USER_C_MODULES=$USER_C_MODULES"
+fi
+
+# Extra -D flags for the module being built, e.g.
+#
+#   EXTRA_CMAKE_ARGS=-DTFLM_STRIP_ERROR_STRINGS=1
+#
+# They cannot go through `make CMAKE_ARGS=...`: ports/rp2's Makefile builds
+# CMAKE_ARGS with `+=`, and a command-line variable overrides the whole thing,
+# taking MICROPY_BOARD and MICROPY_BOARD_DIR with it. So the configure step is
+# done here instead, exactly as the Makefile would do it -- the Makefile then
+# finds $BUILD_DIR/Makefile already present and goes straight to building.
+#
+# This exists because the alternative is worse than not supporting the flag:
+# a -D that is silently dropped produces a successful build of the wrong
+# thing, and nothing downstream says so.
+if [ -n "${EXTRA_CMAKE_ARGS:-}" ] && [ ! -f "$BUILD_DIR/Makefile" ]; then
+    echo "  with $EXTRA_CMAKE_ARGS"
+    # shellcheck disable=SC2086
+    cmake -S "$MPY_DIR/ports/rp2" -B "$BUILD_DIR" -DPICO_BUILD_DOCS=0 \
+        -DMICROPY_BOARD="$BOARD" \
+        -DMICROPY_BOARD_DIR="$BOARD_DIR" \
+        ${USER_C_MODULES:+-DUSER_C_MODULES="$USER_C_MODULES"} \
+        $EXTRA_CMAKE_ARGS
 fi
 
 # BOARD_DIR outside the MicroPython tree is a supported path -- ports/rp2's

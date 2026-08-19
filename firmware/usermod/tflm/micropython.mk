@@ -66,6 +66,13 @@ TFLM_INC := -I$(TFLM_MOD_DIR) -I$(TFLM_DIR) \
 TFLM_DEFS := -DTF_LITE_STATIC_MEMORY=1 -DTF_LITE_MCU_DEBUG_LOG -DNDEBUG
 
 CFLAGS_USERMOD += $(TFLM_INC) $(TFLM_DEFS)
-CXXFLAGS_USERMOD += $(TFLM_INC) $(TFLM_DEFS) \
-                    -std=c++17 -fno-rtti -fno-exceptions -w -O2
+# See micropython.cmake for why the prefix maps are here: __FILE__ in TFLM's
+# assertion macros otherwise makes the binary depend on the checkout path.
+TFLM_MAP := -ffile-prefix-map=$(TFLM_DIR)=tflm \
+            -ffile-prefix-map=$(TFLM_MOD_DIR)=usermod/tflm
+
+CFLAGS_USERMOD += $(TFLM_MAP)
+CXXFLAGS_USERMOD += $(TFLM_MAP) $(TFLM_INC) $(TFLM_DEFS) \
+                    -std=c++17 -fno-rtti -fno-exceptions -fno-use-cxa-atexit \
+                    -fno-threadsafe-statics -w -O2
 LDFLAGS_USERMOD += -lstdc++

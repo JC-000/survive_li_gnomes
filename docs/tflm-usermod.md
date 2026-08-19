@@ -17,22 +17,31 @@ records the divergence this document exists to remove.
 > | | measured | against |
 > | --- | --- | --- |
 > | bit-identical output tensors | **30 / 30** | TinyMaix: 3 of 8 patches change top-1 |
-> | flash, Cortex-M33, linked delta | **61.5 KiB** stripped, 106.9 KiB with diagnostics | ~670 KB spare in the 1 MB firmware reserve |
-> | static RAM (`.bss`) | **332 B** | — |
+> | flash, **measured in a real rp2 image** | **+79,444 B** stripped, +127,768 B with diagnostics | 710,192 B was free in the 1 MB reserve; **630,748 B still is** |
+> | static RAM (`.bss`), same image | **+8 B** stripped, +392 B with diagnostics | — |
 > | tensor arena, 64-bit host | **28,664 B** | TinyMaix path: ~55.6 KB resident |
 > | inference time on the board | **not measured** | TinyMaix: 66.6 ms |
 >
 > **The one thing not measured is the one that needs the board**: nothing here
-> has run on an RP2350. The module is proved to compile, load a model and
-> classify under the **unix** port of MicroPython v1.28.0, and proved to
-> cross-compile and link for Cortex-M33. Between those two there is no rp2
-> firmware build, because the board is in use.
+> has *run* on an RP2350. What exists is a **complete rp2 firmware image
+> containing the module**, built through `tools/build_firmware.sh` against
+> fw-16mb's board definition and pinned toolchain — `build/mpy-16mb-tflm.uf2`,
+> 911,872 bytes, and a stripped variant at 815,616. It has not been flashed.
+> The module is separately proved to load a model and classify, correctly and
+> bit-exactly, under the **unix** port of MicroPython v1.28.0.
 >
-> **And one existing figure is now suspect.** `si-model`'s host references were
-> taken from a default `tf.lite.Interpreter`, which installs the XNNPACK
-> delegate. Measured here, that runtime differs from TFLM by up to 8 counts of
-> 1/256 on these same 30 cases. See *Which TFLite* below — it changes what
-> "host TFLite said" means in three documents.
+> The 16 MB image currently flashed on the hardware does **not** contain this
+> module, and nothing here changed it.
+>
+> **And one existing figure is not what it says it is.** The recorded `.tflite`
+> operating point — threshold 0.598, precision 1.000 at recall **0.500** — was
+> measured through a default `tf.lite.Interpreter`, which installs the XNNPACK
+> delegate. Under the reference kernels, which are what TFLM computes and
+> therefore what the board will compute, the same 22 takes and the same scorer
+> give **0.637 at recall 0.300**. Top-1 is 0.700 under all three host runtimes:
+> the model is unchanged, and what moved is where a threshold can sit. The
+> retune everyone expected to be a no-op is required. See *What the morning
+> confirms* below.
 
 ## Why this was worth asking
 
@@ -160,9 +169,13 @@ is and is not:
   `AllocateTensors()`.** The M33 has a single-precision FPU, so those doubles
   are software-emulated — but IEEE-754 double is IEEE-754 double, correctly
   rounded either way, so they land on the same `int32` multiplier and shift.
-- **The one way to break this is a compiler flag.** `-ffast-math` or
-  `-ffp-contract=fast` at that stage would be enough. The build files say so in
-  a comment, and neither is set.
+- **The one way to break this is a compiler flag.** `-ffast-math`,
+  `-ffp-contract=fast` or `-Ofast` at that stage would be enough. **fw-16mb
+  checked the generated build and none of the three appears anywhere** in the
+  port, the SDK or the firmware target; the C++ flags are
+  `-Os -fno-exceptions -fno-unwind-tables -fno-rtti -fno-use-cxa-atexit`,
+  linked with `--gc-sections`. The usermod adds none of them either, and both
+  build files carry a comment saying why.
 - `docs/speaker-independent.md` records that the host TinyMaix build landed
   within 2–8 of 256 quantisation levels of the device's, "likely genuine
   ARM-versus-host float rounding in the requantisation". **That is precisely the
@@ -191,36 +204,99 @@ beside the glob that would otherwise pick up `kernels/cmsis_nn/`.
 
 ## 3. Footprint
 
-### Flash, measured
+### Flash, measured twice — and the standalone estimate was 21% low
 
-`tools/size_tflm_m33.sh` cross-compiles for `-mcpu=cortex-m33 -mthumb
--mfloat-abi=softfp -mfpu=fpv5-sp-d16` — the rp2 port's own flags for RP2350 —
-and links a probe that loads `si_real.tflite` and invokes it, with
-`--gc-sections`. The figure is the **difference** against an otherwise identical
-link, so newlib's own baseline is not charged to TFLM, and the model is linked
-in as a `const` array so the collector sees which kernels the graph actually
-reaches. A stub model would undercount.
+**Take these numbers, because they are the real image.** Two firmwares built
+through `tools/build_firmware.sh` with the board's own definition and pinned
+compiler, sized against the plain image that is on the board:
+
+| image | `.text` | delta | `.bss` | delta | free in the 1 MB reserve |
+| --- | --- | --- | --- | --- | --- |
+| plain 16 MB (flashed, verified) | 338,384 | — | 5,052 | — | 710,192 |
+| **+ `tflm`, stripped** | **417,828** | **+79,444** | 5,060 | **+8** | **630,748** |
+| + `tflm`, diagnostics on | 466,152 | +127,768 | 5,444 | +392 | 582,424 |
+
+**`-ffile-prefix-map` is not optional, and it failed silently once.** TFLM's
+assertion macros bake `__FILE__` into the image: 19 absolute host paths in the
+diagnostics-on build. The wasted flash is the minor half — the major half is
+that the same sources from a different checkout directory produce a different
+binary, which voids any byte-for-byte reproducibility claim about the firmware.
+(fw-16mb found it in a string diff of the two images.)
+
+The trap in the fix is worth more than the fix. `-ffile-prefix-map` matches
+`__FILE__` as a **literal string prefix**, and `__FILE__` carries the path cmake
+handed the compiler via `-I`, which cmake normalises. The default `TFLM_DIR` was
+`.../usermod/tflm/../../../vendor/tflm`, so the flag appeared on every compile
+line, matched nothing, and the paths stayed in the image — a build log that says
+the fix is applied and a binary that says it is not. `get_filename_component(...
+ABSOLUTE)` first; verify with `strings firmware.elf | grep vendor/tflm`, which
+is now 0 where it was 19. Worth 944 bytes, and the reproducibility.
+
+The stripped image is byte-identical before and after that fix, which confirms
+fw-16mb's diagnosis that the paths arrive with the diagnostics.
+
+**Static RAM is eight bytes.** Not a rounding of something larger — with the
+diagnostic strings gone, so are the statics behind them. TFLM allocates
+everything else out of the arena, which is the property the whole design rests
+on, and this is that property showing up in a link map.
+
+**And the standalone estimate below was 21% optimistic** — 62,332 B against the
+79,444 B the real link costs. The gap is C++ runtime and linker behaviour that a
+tiny `--gc-sections` probe does not reproduce. That is the same shape of error
+`docs/cnn-on-device.md` records for the cycles/MAC prediction ("2.6x optimistic;
+use 9"), so it is worth naming rather than quietly correcting: **a synthetic
+link under-counts, and the number to quote is the one from the real image.**
+
+The standalone measurement is kept below because it is the one that can be run
+without a full firmware build, and because it is what isolates the `-O2`/`-Os`
+and op-count choices from everything else in the image.
+
+### The standalone measurement
+
+`tools/size_tflm_m33.sh` cross-compiles with **the firmware's own compiler and
+flags** — Arm GNU 14.2.rel1 out of `build/toolchain/`, `-mcpu=cortex-m33 -mthumb
+-march=armv8-m.main+fp+dsp -mfloat-abi=softfp -mcmse` — and links a probe that
+loads `si_real.tflite` and invokes it, with `--gc-sections`. The flags are read
+off fw-16mb's generated build rather than reconstructed; an earlier pass here
+used `-mfpu=fpv5-sp-d16` under GCC 14.3 and came out ~1 KB different.
+
+The figure is the **difference** against an otherwise identical link, so
+newlib's own baseline is not charged to TFLM, and the model is linked in as a
+`const` array so the collector sees which kernels the graph actually reaches. A
+stub model would undercount.
 
 | configuration | flash delta | of which model | TFLM itself |
 | --- | --- | --- | --- |
-| 11 ops, diagnostics on | 139,528 B | 30,072 B | **109,456 B (106.9 KiB)** |
-| 11 ops, `TF_LITE_STRIP_ERROR_STRINGS` | 93,000 B | 30,072 B | **62,928 B (61.5 KiB)** |
-| 6 ops (`si_real`'s own), stripped | 75,416 B | 30,072 B | 45,344 B (44.3 KiB) † |
+| 11 ops, `-O2`, diagnostics on | 138,644 B | 30,072 B | 108,572 B (106.0 KiB) |
+| 11 ops, `-O2`, `TF_LITE_STRIP_ERROR_STRINGS` | 92,404 B | 30,072 B | **62,332 B (60.9 KiB)** |
+| 11 ops, `-Os`, diagnostics on | 122,272 B | 30,072 B | 92,200 B (90.0 KiB) |
+| 11 ops, `-Os`, stripped | 76,456 B | 30,072 B | **46,384 B (45.3 KiB)** |
 
-† measured in a scratch build with a hand-trimmed resolver, not with the
-shipped one.
+**`-O2` costs 15,948 bytes over the port's own `-Os`**, and the build files take
+it, because inference time on the board is the one number this module still
+lacks and flash is the resource there is most of. If the board turns out fast
+enough at `-Os`, that is 15.6 KiB back for one line.
 
-**The 47 KB that stripping saves is mostly newlib.** TFLM's diagnostic strings
+A sixth-op trim — registering only what `si_real` uses instead of eleven
+builtins — was measured at 45,344 B in a scratch build under the earlier
+toolchain. Not repeated here, because at these sizes it is not worth the
+resolver being narrower than the next model.
+
+**The 46 KB that stripping saves is mostly newlib.** TFLM's diagnostic strings
 drag in `_vfprintf_r` (8.9 KB), `_dtoa_r` (4.1 KB) and `_vfiprintf_r` (4.6 KB).
-In the real image MicroPython may already carry some of that, so **61.5 KiB is
+In the real image MicroPython may already carry some of that, so **60.9 KiB is
 the pessimistic number and the true marginal cost is at most that**. Keep the
 strings during bring-up; strip them to ship.
 
 Do not be alarmed by the archive: `libtflm_m33.a` is 1.18 MB, and OpenMV's
 prebuilt is 1.3 MB. Almost all of it is kernels nothing links.
 
-Against fw-16mb's image — ~330 KB in a 1 MB firmware reserve, with 15 MB of
-filesystem beyond it — 61.5 KiB is not a budget question.
+**Against the image now on the board**: the reserve ahead of the
+15,728,640-byte filesystem is 1 MB, of which 710,192 B was free. The stripped
+module leaves **630,748 B** of it free. Not a budget question. Past the reserve
+the line in `mpconfigboard.h` would have to grow, costing filesystem — but the
+filesystem is there for the 6.8 MB corpus, so that would be a conversation and
+not an edit.
 
 ### RAM
 
@@ -330,42 +406,86 @@ Both mechanisms, both written, one of them exercised end to end:
 
 | file | for | state |
 | --- | --- | --- |
-| `firmware/usermod/tflm/micropython.cmake` | the **rp2** port | written, **not built** — needs cmake and the board's toolchain |
+| `firmware/usermod/tflm/micropython.cmake` | the **rp2** port | **configures** — fw-16mb ran it through the hook and cmake reached this file's own `TFLM_DIR` guard. Not yet compiled or linked. |
 | `firmware/usermod/tflm/micropython.mk` | the **unix** port | **built and run**, MicroPython v1.28.0 |
 | `firmware/usermod/tflm/modtflm.c` | the binding | 269 lines |
 | `firmware/usermod/tflm/tflm_shim.{h,cpp}` | the C facade | 312 lines, shared with the host proof |
 | `tools/fetch_tflm.sh` | the source tree, from two pinned commits | run |
 | `tools/test_tflm_module.py` | the binding's self-test | passes under the unix port |
 
-The rp2 hook, to be run against `fw-16mb`'s tree:
+The rp2 build goes through `tools/build_firmware.sh`, which owns the pinned
+toolchain, the v1.28.0 version check and the mpy-cross ordering:
 
 ```sh
-cmake -S <micropython>/ports/rp2 -B build-tflm \
-      -DMICROPY_BOARD=WAVESHARE_RP2350_TOUCH_EPAPER_154 \
-      -DMICROPY_BOARD_DIR=$PWD/firmware/boards/WAVESHARE_RP2350_TOUCH_EPAPER_154 \
-      -DUSER_C_MODULES=$PWD/firmware/usermod/tflm/micropython.cmake \
-      -DTFLM_DIR=$PWD/vendor/tflm
+./tools/fetch_tflm.sh
+USER_C_MODULES=$PWD/firmware/usermod/tflm/micropython.cmake \
+BUILD_DIR=$PWD/build/mpy-16mb-tflm \
+OUT=build/mpy-16mb-tflm.uf2 \
+./tools/build_firmware.sh
+
+# and to strip the diagnostic strings, which is 49,268 bytes of the image:
+CMAKE_ARGS=-DTFLM_STRIP_ERROR_STRINGS=1 \
+USER_C_MODULES=$PWD/firmware/usermod/tflm/micropython.cmake \
+BUILD_DIR=$PWD/build/mpy-16mb-tflm-strip \
+OUT=build/mpy-16mb-tflm-strip.uf2 \
+./tools/build_firmware.sh
 ```
 
-### Four traps, all of which fail quietly
+**Both paths must be absolute**, and that is the first of the traps below: the rp2 port's
+Makefile passes `USER_C_MODULES` through to cmake unchanged and cmake resolves
+it relative to `ports/rp2`, so a repo-relative path fails with
 
-Each of these produced a *successful build* with the module simply absent or
-uncompilable, which is the shape of failure this project keeps meeting.
+    USER_C_MODULES doesn't exist:
+    .../ports/rp2/firmware/usermod/tflm/micropython.cmake
 
-**1. `USER_C_MODULES` means two different things.** For CMake it is the path to
+naming a path nobody wrote. A relative `BUILD_DIR` fails later and more
+mildly — the image builds and only the final copy misses it, leaving the `.uf2`
+under `build/micropython/ports/rp2/build/`.
+
+`BUILD_DIR` and `OUT` are distinct from the defaults on purpose, so the plain
+image that is currently flashed and verified stays untouched. `TFLM_DIR` is not
+passed because this file defaults it to `vendor/tflm`, which is where
+`fetch_tflm.sh` puts it.
+
+**The compiler is pinned to Arm GNU 14.2.rel1** and that pin is not a
+preference: Homebrew's `arm-none-eabi-gcc` ships without newlib and cannot link
+pico-sdk's boot stage 2, and Arm 15.3 fails on mbedtls under
+`-Werror=array-bounds`. The size figures above were taken with 14.2.rel1 for
+that reason.
+
+### Six traps, all of which fail quietly
+
+Every one of these produced a *successful build* with the module simply absent,
+or a failure naming the wrong file — the shape of failure this project keeps
+meeting. The first is the relative-path one above; the rest follow.
+
+**2. `USER_C_MODULES` means two different things.** For CMake it is the path to
 a `.cmake` file. For Make it is the **parent directory** that gets globbed for
 `*/micropython.mk`. Pointing Make at the module's own directory builds and
 links cleanly and then fails at run time with `ImportError: no module named
 'tflm'`, because nothing was ever added.
 
-**2. MicroPython's Make ports do not compile `.cc`.** `py.mk` pattern-matches
+**3. The same variable reaches mpy-cross, which only knows the Make rule.**
+Found by fw-16mb and fixed in `tools/build_firmware.sh`. `USER_C_MODULES` set
+in the environment for an rp2 build is inherited by the **mpy-cross host
+build**, which goes through `py/py.mk` and applies the *directory* convention
+to a `.cmake` file:
+
+    py/py.mk:37: *** USER_C_MODULES doesn't exist: .../micropython.cmake
+
+The file plainly exists, and the failure arrives before the port is configured
+at all, so it reads as a broken usermod rather than a build-script bug. The
+script now clears the variable for that one command; **build through the script
+rather than by hand.**
+
+**4. MicroPython's Make ports do not compile `.cc`.** `py.mk` pattern-matches
 `SRC_USERMOD_CXX` against `%.cpp` only, so a `.cc` file is accepted into the
 variable, never compiled, never linked — and the build succeeds. This is why
 upstream's `create_tflm_tree.py` has a `--rename_cc_to_cpp` flag and why
 `tools/fetch_tflm.sh` renames the whole tree. Nothing in TFLM `#include`s a
 `.cc` file, so the rename is safe.
 
-**3. TFLM's sources belong in the `LIB` variables, and in CMake in a real
+**5. TFLM's sources belong in the `LIB` variables, and in CMake in a real
 library.** `py.mk` adds `SRC_USERMOD_C`/`_CXX` to `SRC_QSTR`, which
 preprocesses every listed file in a single `clang -E` invocation to harvest
 `MP_QSTR_` names. Four hundred TFLM translation units contain no QSTRs;
@@ -374,7 +494,7 @@ scanning them costs minutes and enough memory that clang died with
 scanned. The CMake file does the equivalent by building TFLM as a `STATIC`
 library and leaving only `modtflm.c` in the usermod target.
 
-**4. A generated TFLM tree needs more than `tensorflow/lite`.**
+**6. A generated TFLM tree needs more than `tensorflow/lite`.**
 `schema_utils.cc` includes `tensorflow/compiler/mlir/lite/kernels/internal/`,
 and `micro_ops.h` includes `signal/micro/kernels/*.h` unconditionally even when
 no signal operator is registered. `tools/fetch_tflm.sh` copies both.
@@ -400,12 +520,104 @@ Applying the flatbuffers patch is not cosmetic. It removes flatbuffers' fallback
 to a default allocator; without it the interpreter can reach the C heap, which
 on the board is not MicroPython's heap.
 
+## What the morning confirms, and what it cannot
+
+Written the night before, so that nobody re-derives the logic at a bench.
+
+### The measurement is the byte check, and it is one command
+
+    ./tools/make_tflm_cases.py                    # host: 30 patches + answers
+    uvx mpremote connect $PORT cp build/tflm-cases/si_model.tflite :
+    uvx mpremote connect $PORT cp -r build/tflm-cases/cases :
+    uvx mpremote connect $PORT cp build/tflm-cases/manifest.txt :cases/
+    uvx mpremote connect $PORT run tools/tflm_probe.py | tee /tmp/device.txt
+    ./tools/check_tflm_device.py /tmp/device.txt   # exit 0 = confirmed
+
+`check_tflm_device.py` compares all 22 output integers of all 30 cases against
+`reference.txt` and exits non-zero on a single count. **That comparison is the
+whole confirmation.** If it passes, the board computes what the host computes,
+and every host number measured under the reference kernels is a device number
+by construction -- no re-derivation, no separate accuracy run, nothing to
+interpret.
+
+If it fails, the failure is specific and the first suspect is a build flag; see
+*Does bit-exactness carry* above. It is not a reason to retune anything.
+
+**A `PROBE-ERROR` line is a bug in `tools/tflm_probe.py`, not a finding about
+the board**, and `check_tflm_device.py` fails the run on one. That distinction
+is the direct lesson of `tools/cnn_probe.py`, where every section's broad
+`except` could dress a probe typo as a hardware fault.
+
+### The operating point does **not** transfer from the recorded number, and this is the finding
+
+The plan of record was: TFLM is bit-exact with the `.tflite`, so the `.tflite`
+operating point -- **threshold 0.598, precision 1.000 at recall 0.500** on the
+22 takes -- becomes the device operating point and the retune is a no-op.
+
+**It is not a no-op, because that recorded number came from XNNPACK.** Scored
+through `tools/si_eval.py --device-scores`, which is si-model's own scorer, the
+same 22 takes and the same `si_real.tflite`:
+
+| host runtime | recommended threshold | precision | recall |
+| --- | --- | --- | --- |
+| `default` (XNNPACK delegate) | 0.598 | 1.000 | 0.500 |
+| `nodelegate` (optimised CPU) | 0.594 | 1.000 | 0.500 |
+| **`ref` (reference kernels) = what TFLM computes** | **0.637** | **1.000** | **0.300** |
+
+The recorded 0.598 / 0.500 reproduces exactly — under the delegate. The runtime
+that will actually ship reaches precision 1.000 only at **0.637, recall 0.300**.
+
+**The mechanism is small and specific.** `problem_01.wav` -- an
+out-of-vocabulary take -- comes back `brother` at p = 0.625 under the reference
+kernels. The threshold that must exclude it therefore sits above 0.625, and two
+correct answers live between 0.598 and 0.637. The whole difference is a handful
+of quantisation counts moving one negative across one threshold, which is
+precisely the size of the runtime disagreement measured in *Which TFLite*
+(up to 8 counts of 1/256).
+
+Three things follow, and the order matters:
+
+1. **The model has not got worse.** Top-1 is 0.700 under all three runtimes,
+   identically. What moved is where a threshold can be placed, not what the
+   network computes.
+2. **0.300 against 0.500 is two utterances out of ten**, which si-model's own
+   A/B criteria call noise at this sample size. It is not evidence that TFLM
+   classifies worse; it is evidence that **a threshold tuned on one runtime does
+   not transfer to another**, which is the same lesson `docs/speech.md` is built
+   around and the same one `docs/cnn-on-device.md` recorded for TinyMaix.
+3. **So the retune is required, and it is cheap.** It does not need the board:
+   `tools/make_tflm_cases.py` already produces the reference-kernel scores, and
+   `si_eval.py --device-scores build/tflm-cases/reference.txt` sweeps them. What
+   the board adds is confirmation that those host scores *are* the device's,
+   which is the byte check above.
+
+**Filter to `set=takes` before scoring.** Every `SCORE` line carries `set=`, and
+the eight `set=bitexact` patches have **no ground truth** -- their filenames
+encode what an *earlier* model predicted. A scorer that does not filter treats
+all eight as must-stay-silent negatives; run over all 30 it recommends threshold
+0.637 for a partly fictional reason, and the agreement with the correct answer
+is a coincidence.
+
+### What the morning cannot settle
+
+- **Whether TFLM is more accurate than TinyMaix.** Ten positives and twelve
+  negatives; recall moves in steps of 0.1. The paired run
+  (`runtime=tflm` and `runtime=tinymaix` on identical inputs in one session)
+  removes the session variable, which is worth having, but not the sample size.
+- **Whether either operating point survives a stranger.** Every take is one
+  speaker, who is also the person the gates were tuned against.
+- **Anything about a live microphone.** These are staged input tensors,
+  deliberately: it puts the front end outside the experiment so that a byte
+  difference has exactly one possible cause.
+
 ## 6. What this does not settle
 
 In the order they matter.
 
-1. **Nothing has run on an RP2350.** The module is proved under the unix port
-   and proved to link for M33. The first board session should run
+1. **Nothing has run on an RP2350.** The module is proved under the unix port,
+   proved to link for M33, and its cmake is proved to configure inside the real
+   rp2 build — but no rp2 image containing it has been compiled, and the 16 MB
+   image now on the board does not contain it. The first board session should run
    `tools/test_tflm_module.py` and then re-run the 30 cases and check them byte
    for byte against the host — `docs/cnn-on-device.md`'s standing rule is that
    a clean import is not the test.
@@ -424,7 +636,14 @@ In the order they matter.
    line.
 5. **The 6-op flash figure** came from a scratch build with a hand-trimmed
    resolver. If 61.5 KiB ever matters, trim the resolver properly and re-measure.
-6. **`emlearn_cnn_int8` does not have to go.** Keeping both means the fallback
-   chain becomes TFLM → TinyMaix → DTW, which costs the 12 KB TinyMaix import
-   and nothing else. Whether that is prudence or clutter is a call for whoever
-   ships this.
+6. **`emlearn_cnn_int8` does not have to go**, and the version pin is what
+   keeps that true. The vendored `.mpy` is a **native** module at mpy 6.3 /
+   `armv7emsp`, and native modules are rejected unless `MPY_VERSION` and
+   `MPY_SUB_VERSION` both match. v1.28.0 is 6.3, so it stays loadable in this
+   image — but neither this module nor anything else can bump the MicroPython
+   version without costing the board its existing CNN runtime, and the board
+   has no networking to fetch a replacement. (fw-16mb, unprompted, and it is
+   the kind of thing that is only ever noticed after the fact.)
+   Keeping both makes the fallback chain TFLM → TinyMaix → DTW for the price of
+   the 12 KB TinyMaix import. Whether that is prudence or clutter is a call for
+   whoever ships this.

@@ -141,6 +141,7 @@ See [docs/design.md](docs/design.md) for why.
 | `tools/deploy.sh` | Copy modules and clips to the board and reset |
 | `tools/build_firmware.sh` | Build MicroPython with all 16 MB of flash addressed |
 | `tools/flash_capacity.py` | Write and read back a real file — proves the filesystem size |
+| `tools/tflm_cases.py`, `tools/tflm_device_cases.py`, `tools/tflm_compare_cases.py` | The 30-case host-vs-device TFLM comparison, and its gate |
 | `tools/make_clip.py` | Convert audio to a raw clip the codec can DMA directly |
 | `tools/build_clips.sh` | Rebuild `clips/` — holds the per-clip level tuning |
 | `tools/enrol.py`, `tools/pull_recording.py` | Record your voice through the board, over USB |
@@ -156,6 +157,7 @@ See [docs/design.md](docs/design.md) for why.
 | `docs/speech-voice.md` | Speaking the reply — voice, prosody, and what fits in 3 MB |
 | `docs/speech.md` | The feature spec — normative, to the last integer |
 | `docs/restore-factory-firmware.md` | Putting the original firmware back, and the two MicroPython images |
+| `docs/morning-runbook.md` | Bench steps for flashing and gating the TFLM image |
 
 ## Hardware status
 

@@ -60,15 +60,48 @@ try:
 except ImportError:
     vocab = None
 
-# The native module. Absent on the host, and absent on a board where it was not
-# deployed; both must degrade to "no keyword" rather than fail to start, exactly
-# as the DTW spotter does.
+# The native modules. Both absent on the host, and either can be absent on a
+# board; every combination must degrade to "no keyword" rather than fail to
+# start, exactly as the DTW spotter does.
+#
+# `emlearn_cnn_int8` is TinyMaix, loaded from a `.mpy`. `tflm` is TensorFlow
+# Lite Micro, compiled into the firmware -- see docs/tflm-usermod.md. They are
+# not equivalent: TinyMaix approximates TFLite's int8 arithmetic and TFLM
+# reproduces it exactly, which is the entire reason the second one exists.
 try:
     import emlearn_cnn_int8 as _cnn
 except ImportError:
     _cnn = None
 
+try:
+    import tflm as _tflm
+except ImportError:
+    _tflm = None
+
 MODEL_PATH = "si_model.tmdl"
+MODEL_PATH_TFLM = "si_model.tflite"
+
+# TFLM plans its whole working set into one caller-owned buffer -- the model
+# copy and every activation. Measured at 58,752 B on a 64-bit host and expected
+# lower on the board, where the metadata pointers halve; `arena_used()` reports
+# the truth and `tools/tflm_probe.py` prints it. 64 KB is generous on purpose:
+# too small raises at bind() rather than corrupting the heap, which is the one
+# behaviour TinyMaix does not have.
+TFLM_ARENA_BYTES = 64 * 1024
+
+# Which runtime `bind()` reaches for first.
+#
+# **TinyMaix, until the A/B says otherwise.** TFLM is bit-exact with host TFLite
+# and TinyMaix is not, which is a strong argument and not yet a measurement on
+# this board -- and the shipped operating point (THRESHOLD/MARGIN/TIE_FLOOR
+# below) was tuned against TinyMaix, on the device. Swapping the runtime under
+# constants tuned for the other one is the exact mistake docs/speech.md is
+# built around, so the swap waits for numbers.
+#
+# `bind(backend="tflm")` forces the other side for the comparison. With
+# BACKEND_DEFAULT unchanged, a board carrying both runs TinyMaix, and a board
+# carrying only TFLM falls through to it rather than going silent.
+BACKEND_DEFAULT = "tinymaix"
 
 UNKNOWN = "unknown"
 CLASSES = (tuple(vocab.LABELS) + (UNKNOWN,)) if vocab is not None else ()
@@ -180,6 +213,83 @@ MARGIN = 2.0 / 256.0    # top-1 minus top-2, two output quantisation steps
 TIE_FLOOR = 0.49
 
 
+class _TinyMaix:
+    """The incumbent: `emlearn_cnn_int8` over a `.tmdl`.
+
+    Every line of this is a requirement of the wrapper rather than a choice --
+    see the module docstring above, and `tools/tmdl_info.py` for the four
+    failure modes it does not report.
+    """
+
+    name = "tinymaix"
+    default_path = MODEL_PATH
+
+    def __init__(self, path):
+        handle = open(path, "rb")
+        try:
+            blob = handle.read()
+        finally:
+            handle.close()
+
+        # array('B') and not bytearray: the wrapper checks the buffer's
+        # typecode and raises ValueError("model should be bytes") for a
+        # bytearray. Verified on the board.
+        data = array("B", blob)
+        del blob
+        self.model = _cnn.new(data)
+        del data
+        self.n_classes = self.model.output_dimensions()[0]
+
+    def run(self, patch, scores):
+        self.model.run(patch, scores)
+
+
+class _Tflm:
+    """TensorFlow Lite Micro over the `.tflite` itself.
+
+    Cheaper to set up than the above and with fewer ways to be silently wrong:
+    the arena is ours, an undersized one raises, and `bytes` straight off the
+    filesystem is an acceptable input rather than something to be copied into
+    an `array('B')` at 2.06x the file's size.
+    """
+
+    name = "tflm"
+    default_path = MODEL_PATH_TFLM
+
+    def __init__(self, path, arena_bytes=TFLM_ARENA_BYTES):
+        handle = open(path, "rb")
+        try:
+            blob = handle.read()
+        finally:
+            handle.close()
+        # Held for the object's life: TFLM plans into it and keeps pointers
+        # into it, so it must outlive the model exactly as the arena does in
+        # every other TFLM integration.
+        self.arena = bytearray(arena_bytes)
+        self.model = _tflm.new(blob, self.arena)
+        self.n_classes = self.model.output_dimensions()[0]
+
+    @property
+    def arena_used(self):
+        return self.model.arena_used()
+
+    def run(self, patch, scores):
+        self.model.run(patch, scores)
+
+
+def _backend_for(name):
+    """-> (class, why-not). Exactly one of the two is None."""
+    if name == "tflm":
+        if _tflm is None:
+            return None, "tflm not in this firmware"
+        return _Tflm, None
+    if name == "tinymaix":
+        if _cnn is None:
+            return None, "emlearn_cnn_int8 not deployed"
+        return _TinyMaix, None
+    return None, "unknown backend %r" % (name,)
+
+
 class Spotter:
     """Holds the model, the front-end scratch and the patch buffer.
 
@@ -195,47 +305,60 @@ class Spotter:
         self.scores = None
         self.n_classes = 0
         self.error = None
+        self.backend = None
 
     @property
     def available(self):
         return self.model is not None
 
-    def bind(self, path=MODEL_PATH, buffers=None):
+    def bind(self, path=None, buffers=None, backend=None):
         """Load the model. Returns True on success; never raises.
 
         A board that cannot load the model must still hold a conversation --
         every turn simply takes DOCTOR's no-keyword path, which is a real ELIZA
         behaviour. `self.error` carries why, because a spotter that is silently
         absent looks exactly like one that is merely strict.
+
+        `backend` is "tinymaix", "tflm", or None for BACKEND_DEFAULT with a
+        fall-through to the other if the default's module is not in this
+        firmware. `path` defaults to whichever model file that backend wants,
+        so the ordinary caller passes neither and the A/B passes only
+        `backend=`. **Everything below the model -- the features, the three
+        gates, the labels -- is shared code**, so a difference between the two
+        runs is a difference between the runtimes and nothing else.
         """
-        if _cnn is None:
-            self.error = "emlearn_cnn_int8 not deployed"
-            return False
         if not CLASSES:
             self.error = "vocab not deployed, so no class order"
             return False
+
+        wanted = backend or BACKEND_DEFAULT
+        factory, why = _backend_for(wanted)
+        if factory is None and backend is None:
+            # Import-fallback, and only when the caller did not ask for a
+            # specific runtime. An explicit request that cannot be honoured is
+            # an error, not an invitation to run the other one and report
+            # numbers under the wrong name.
+            other = "tflm" if wanted == "tinymaix" else "tinymaix"
+            fallback, why_other = _backend_for(other)
+            if fallback is not None:
+                factory, why = fallback, None
+            else:
+                why = "%s; %s" % (why, why_other)
+        if factory is None:
+            self.error = why
+            return False
+
         try:
-            handle = open(path, "rb")
-            try:
-                blob = handle.read()
-            finally:
-                handle.close()
-
-            # array('B') and not bytearray: the wrapper checks the buffer's
-            # typecode and raises ValueError("model should be bytes") for a
-            # bytearray. Verified on the board.
-            data = array("B", blob)
-            del blob
-            self.model = _cnn.new(data)
-            del data
-
-            dims = self.model.output_dimensions()
-            self.n_classes = dims[0]
+            self.model = factory(path if path is not None
+                                 else factory.default_path)
+            self.backend = factory.name
+            self.n_classes = self.model.n_classes
             if self.n_classes != len(CLASSES):
                 # Loud, and at load rather than at the first reply. A model with
                 # a different output width is a model trained on a different
                 # vocabulary, and quietly using it would relabel every answer.
                 self.model = None
+                self.backend = None
                 self.error = ("model has %d outputs, vocabulary has %d"
                               % (self.n_classes, len(CLASSES)))
                 return False
@@ -246,6 +369,7 @@ class Spotter:
             return True
         except Exception as exc:      # noqa: BLE001 -- degrading is the point
             self.model = None
+            self.backend = None
             self.error = "%s: %s" % (type(exc).__name__, exc)
             return False
 
