@@ -300,6 +300,57 @@ class Recorder:
             print("chirp buffer did not fit; the toy will be silent")
             return False
 
+    def speak(self, i2c, path, rate=8000):
+        """Play one pre-rendered packed-word clip through the speaker.
+
+        Ten-minute MVP of the voice output, deliberately minimal: clips are
+        8 kHz (half the bytes of 16 k, so the longest reply fits the play
+        buffer), and the codec + MCLK are re-clocked around the playback and
+        restored, the dance the bench tone tests proved. The play buffer IS
+        the capture buffer -- 96 KB, idle between turns, already reserved at
+        the heap floor; a reply and a recording never coexist. Never raises.
+        """
+        if not self._ensure(i2c):
+            return False
+        try:
+            with open(path, "rb") as fh:
+                n_bytes = fh.readinto(self.buf)
+            n_words = n_bytes // 4
+            if not n_words:
+                return False
+            if not self._dout_ready:
+                self._audio.dout_pio_init()
+                self._dout_ready = True
+            # re-clock down for the clip...
+            self._codec.init(mclk_freq=rate * 256, sample_freq=rate,
+                             res_in=16, res_out=16, volume=CHIRP_VOLUME,
+                             mic_gain=MIC_GAIN)
+            self._codec.mute(False)
+            self._audio.mclk_freq = rate * 256
+            self._audio.mclk_pio_init()
+            self._pa.value(1)
+            mv = memoryview(self.buf)
+            self._audio.dma_play_words_async(mv[: n_words * 2])
+            while not self._audio.play_finished():
+                time.sleep_ms(10)
+            time.sleep_ms(CHIRP_SETTLE_MS)
+            return True
+        except Exception as exc:  # noqa: BLE001 -- voice must never break a turn
+            print("speak failed (%s: %s)" % (type(exc).__name__, exc))
+            return False
+        finally:
+            # ...and restore the capture clock whatever happened.
+            try:
+                self._pa.value(0)
+                self._codec.init(mclk_freq=self.rate * 256,
+                                 sample_freq=self.rate, res_in=16, res_out=16,
+                                 volume=DAC_VOLUME, mic_gain=MIC_GAIN)
+                self._codec.mute(True)
+                self._audio.mclk_freq = self.rate * 256
+                self._audio.mclk_pio_init()
+            except Exception:  # noqa: BLE001
+                pass
+
     def chirp(self, i2c):
         """Play the activation tone and wait it out. Returns True if it sounded.
 

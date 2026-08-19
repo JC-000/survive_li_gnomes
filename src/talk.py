@@ -31,6 +31,7 @@ endpointing, the engine, the panel -- runs and can be judged.
 """
 
 import time
+import hashlib
 
 import board
 import epaper
@@ -346,6 +347,22 @@ class Conversation:
             self.nouns = getattr(vocab, "NOUNS", None) if vocab else None
         return self.doctor is not None
 
+    def _clip_for(self, text):
+        # say_<sha1[:8]>.pcmw on flash, rendered on the host by the voice
+        # tooling. No clip is the normal case and costs one os.stat.
+        try:
+            # .digest()+hexlify, not .hexdigest(): MicroPython's hashlib
+            # objects have no hexdigest method, and the except below would
+            # have eaten that NameError as "no clip" forever.
+            import binascii
+            digest = binascii.hexlify(hashlib.sha1(text.encode()).digest())
+            name = "say_" + digest[:8].decode() + ".pcmw"
+            import os
+            os.stat(name)
+            return name
+        except Exception:  # noqa: BLE001
+            return None
+
     def _present(self, text):
         """Script text as it should appear on glass.
 
@@ -623,6 +640,12 @@ def main():
         footer = "%s  %.2fV" % (heard or "?", battery.volts())
         mode = panel.show(reply, footer=footer)
         print("   %s [%s, %d ms]" % (reply, mode, time.ticks_diff(time.ticks_ms(), started)))
+
+        # She speaks, if the host rendered this line. After the panel, so the
+        # text and the voice land together-ish rather than voice-then-wait.
+        clip = session._clip_for(reply)
+        if clip:
+            recorder.speak(i2c, clip)
 
         if not inputs.wait_for_release(STUCK_MS):
             # Held for 30 s. A human cannot meaningfully do that, so it is a

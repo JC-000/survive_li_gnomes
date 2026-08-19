@@ -199,7 +199,13 @@ UNKNOWN_INDEX = len(CLASSES) - 1
 # Each backend carries its own floor and bind() selects it; TinyMaix's live-
 # tuned 0.35 is untouched for the fallback path.
 THRESHOLD = 0.35        # top-1 probability floor  -- costs nothing on this set
-THRESHOLD_BY_BACKEND = {"tinymaix": THRESHOLD, "tflm": 161.0 / 256.0}
+# 2026-08-19, bench verdict: at 161/256 the toy fired on roughly one clear
+# "mother" in three and the user called it "not great about responding". The
+# floor drops to the live-tuned 0.35: chattier, at the documented price that
+# `problem` can fire "Your brother?" (0.625 under these kernels). The strict
+# point remains one edit away; both are measured, and which toy this is is the
+# user's call -- made, at the desk, in favour of answering.
+THRESHOLD_BY_BACKEND = {"tinymaix": THRESHOLD, "tflm": THRESHOLD}
 MARGIN = 2.0 / 256.0    # top-1 minus top-2, two output quantisation steps
 
 # An exact tie is forgiven, but only above this probability. Third tuned
