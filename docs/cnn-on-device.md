@@ -39,7 +39,7 @@ Measured in earlier sessions. These cost real time to get right.
 | Native arch | **`armv7emsp`**, mpy **6.3** |
 | MCU | RP2350A, Cortex-M33, 150 MHz, FPv5 single-precision FPU + Armv8-M DSP |
 | Clean-boot heap | **492 KB free, 489 KB largest contiguous** |
-| Filesystem | 3 MB (the stock `RPI_PICO2` build assumes a 4 MB part) |
+| Filesystem | **15,728,640 bytes** since 2026-08-18 (`tools/build_firmware.sh`; it was 3 MB, the stock `RPI_PICO2` build assuming a 4 MB part). The heap figures above were taken before that change and still hold: 493,040 bytes free on the new firmware |
 | Networking | **none** — RP2350A, not a -W. It cannot `mip install` anything itself |
 | `emlearn_fft` | **not installed** |
 | viper speedup | **12.8x** on VAD frame stats, **35.6x** on the 512-point FFT, both bit-identical to the portable path |

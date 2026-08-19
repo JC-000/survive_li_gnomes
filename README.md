@@ -139,6 +139,8 @@ See [docs/design.md](docs/design.md) for why.
 | `tools/probe.py` | Bus scan + battery, run from the host |
 | `tools/input_monitor.py` | Log input transitions — use if a button misbehaves |
 | `tools/deploy.sh` | Copy modules and clips to the board and reset |
+| `tools/build_firmware.sh` | Build MicroPython with all 16 MB of flash addressed |
+| `tools/flash_capacity.py` | Write and read back a real file — proves the filesystem size |
 | `tools/make_clip.py` | Convert audio to a raw clip the codec can DMA directly |
 | `tools/build_clips.sh` | Rebuild `clips/` — holds the per-clip level tuning |
 | `tools/enrol.py`, `tools/pull_recording.py` | Record your voice through the board, over USB |
@@ -153,7 +155,7 @@ See [docs/design.md](docs/design.md) for why.
 | `docs/speech-design.md` | Why speech *input* is done this way, and what was ruled out |
 | `docs/speech-voice.md` | Speaking the reply — voice, prosody, and what fits in 3 MB |
 | `docs/speech.md` | The feature spec — normative, to the last integer |
-| `docs/restore-factory-firmware.md` | Putting the original firmware back |
+| `docs/restore-factory-firmware.md` | Putting the original firmware back, and the two MicroPython images |
 
 ## Hardware status
 
@@ -165,13 +167,20 @@ See [docs/design.md](docs/design.md) for why.
 | SHTC3 temp/humidity | Working — used by `examples/display_status.py` |
 | PCF85063A RTC | Working |
 | ES8311 audio | Working — plays the shake, fart and laugh clips |
-| ES8311 microphone | Captures cleanly at 24 kHz; the ELIZA program wants 16 kHz, **unverified** |
+| ES8311 microphone | Working — 23991 Hz at 24 kHz, 15991 Hz at 16 kHz, measured against wall clock |
 | microSD | Untested, no card inserted |
+| Flash filesystem | Working — 15,728,640 bytes, 10 MB written and read back identically |
 
-Running MicroPython **v1.28.0** (`RPI_PICO2`, ARM). The factory C firmware was
-dumped before reflashing and is restorable — see
-[docs/restore-factory-firmware.md](docs/restore-factory-firmware.md). Note the
-filesystem is 3 MB, not 16 — the stock build assumes a 4 MB part.
+Running MicroPython **v1.28.0**, built for this board by
+[`tools/build_firmware.sh`](tools/build_firmware.sh) so that all 16 MB of flash
+is addressed: the filesystem is **15,728,640 bytes**, measured, against the
+3 MB the stock `RPI_PICO2` image formats. 10 MB of it has been written and read
+back to prove the part answers there and does not wrap.
+
+The stock image remains the rollback, and the factory C firmware was dumped
+before any of this and is restorable — both in
+[docs/restore-factory-firmware.md](docs/restore-factory-firmware.md), along with
+the warning that flashing either MicroPython image reformats the filesystem.
 
 ## Credits
 

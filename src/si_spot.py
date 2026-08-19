@@ -155,6 +155,22 @@ MARGIN = 2.0 / 256.0    # top-1 minus top-2, two output quantisation steps
 # negative came back argmax `unknown`. Precision 1.000 held, recall 0.600 ->
 # 0.700.
 #
+# **The band this covers is empty today, and that is measured.** Over 6426
+# synthetic utterances the margin distribution is bimodal: 113 at exactly 0/256,
+# **nothing at all between 1/256 and 6/256**, 2 at 7/256, and 6311 at 8/256 or
+# more. That looks like a property of the arithmetic rather than of one corpus
+# -- a 22-class softmax quantised at 1/256 either has one class dominating or
+# has two collapsing onto the same integer, and an intermediate gap needs the
+# underlying float difference to land in one narrow window.
+#
+# So covering the band rather than only the tie point is chosen on **reasoning,
+# not measurement**: all three candidate rules score identically on that corpus
+# (tp 1418, wrong-keyword 94, false-oov 1184 -- not close, identical). The
+# reasoning is that a flatter model would populate the band, and the floor is
+# what the measurement actually means -- a near-tie at p~0.5 is a confident
+# two-way split, a near-tie at p=0.28 is nothing standing out. **If that band
+# ever fills, re-measure rather than trusting this note.**
+#
 # **It is not free.** On the synthetic set it costs one false fire in 4106, so
 # precision is no longer exactly 1.000 there. That is a real departure from what
 # docs/speech.md asks for, taken because three of ten live keywords is a large
@@ -275,13 +291,15 @@ class Spotter:
 
         label = None
         if best != UNKNOWN_INDEX and top >= THRESHOLD:
-            # NOTE: this is not monotonic in `margin`. An exact tie above
-            # TIE_FLOOR fires, while a margin of one quantisation step does not,
-            # because MARGIN is two steps. That is what was measured, so it is
-            # what ships, but it is a wart rather than a design -- raised with
-            # si-model, and the fix if they agree is to make MARGIN one step so
-            # the two conditions meet.
-            if margin >= MARGIN or (margin == 0.0 and top >= TIE_FLOOR):
+            # Monotone in `margin` by construction: the floor covers the whole
+            # sub-MARGIN band rather than only the exact-tie point at its
+            # bottom. An earlier version tested `margin == 0.0` here and left a
+            # one-step hole -- a margin of 1/256 was rejected while 0/256 was
+            # accepted -- which is not a rule anyone can hold in their head and
+            # would have come back if `MARGIN` were ever moved.
+            enough_separation = margin >= MARGIN
+            confident_split = top >= TIE_FLOOR   # rescues the sub-MARGIN band
+            if enough_separation or confident_split:
                 label = CLASSES[best]
         return label, top, margin, best, n_frames, clipped
 

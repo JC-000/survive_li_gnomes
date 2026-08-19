@@ -14,9 +14,9 @@ and microphone ones on 2026-08-18.
 | --- | --- |
 | Chip | RP2350A (ARM Cortex-M33, Secure image) — *verified* |
 | Clock | 150 MHz — *verified* |
-| RAM | 520 KB (491 KB free under MicroPython) — *verified* |
-| Flash | 16 MB — *verified* |
-| USB serial | `/dev/cu.usbmodem101`, VID `2E8A` PID `0009` |
+| RAM | 520 KB. GC heap 497,472 bytes, **493,040 free** after `gc.collect()` on a bare REPL — *verified* 2026-08-18 on the 16 MB firmware. docs/cnn-on-device.md recorded "492 KB free" at clean boot on the *stock* firmware, which is this same figure to within a kilobyte — the rebuild did not measurably move the heap |
+| Flash | 16 MB — *verified*, and all of it addressed since 2026-08-18 (see Flash size below) |
+| USB serial | `/dev/cu.usbmodem101`, VID `2E8A` PID `0005` — *verified* under MicroPython (`ioreg`, product name "Board in FS mode"). This file said `0009` until 2026-08-18; that value was never MicroPython's — the rp2 port defaults to `0x0005` and no board file overrides it. |
 | Board UID | `9717825cf3bcf97c` |
 
 ## E-paper display
@@ -264,11 +264,52 @@ devices. Only GP6/GP7 is a real bus.
 again on GP6/GP7 wedges the block: every transfer fails `EIO` while `scan()`
 keeps succeeding. `mpremote reset` clears it.
 
-## Flash size caveat
+## Flash size
 
-The stock `RPI_PICO2` MicroPython build assumes 4 MB, so the filesystem is
-**3 MB of the 16 MB present** and the other 13 MB is unaddressed. Recovering it
-means building MicroPython with the correct flash size.
+**The filesystem is 15,728,640 bytes** — 3840 blocks of 4096, *verified* by
+`os.statvfs('/')` on 2026-08-18.
+
+It was 3 MB until then. The stock `RPI_PICO2` build assumes the reference
+Pico 2's 4 MB part, so it formatted 3 MB and left the other 13 MB unaddressed —
+nothing was wrong with the flash, it simply was not in the map. The board now
+runs a MicroPython built from `firmware/boards/WAVESHARE_RP2350_TOUCH_EPAPER_154`
+by `tools/build_firmware.sh`: same v1.28.0, same pico-sdk 2.2.0, same frozen
+modules, 1 MB reserved for the firmware and the remaining 15 MB for the
+filesystem. `os.uname()` reports it:
+
+    v1.28.0 on 2026-08-18 (GNU 14.2.1 MinSizeRel)
+    _build='WAVESHARE_RP2350_TOUCH_EPAPER_154'
+
+### Reported size is not usable size
+
+`statvfs` only repeats what `MICROPY_HW_FLASH_STORAGE_BYTES` said at compile
+time. A part smaller than the firmware believes raises nothing — SPI NOR flash
+drops the address bits it does not have, so a write at 12 MB lands at 4 MB and
+destroys what was there. `tools/flash_capacity.py` settles it by writing a real
+file with every 4 KB chunk stamped with its own offset. *Measured*:
+
+| | |
+| --- | --- |
+| written and read back identically | 10,485,760 bytes, 0 of 2560 chunks bad |
+| sustained write | 210 kB/s |
+| read | 9,320 kB/s |
+
+The write reached roughly 11 MB into the part without wrapping, which is the
+result that matters: a 4 MB part addressed as 16 would have folded those chunks
+back over each other and the stamps would have disagreed.
+
+Only the two rates were measured; that reads are 44× faster is presumably
+memory-mapped XIP against erase-and-program, but that part is inference. Either
+way, loading a 6.8 MB corpus costs about half a minute and reading it back at
+runtime is free — worth knowing before anyone rules out streaming audio off the
+filesystem.
+
+### Flashing either image wipes the filesystem
+
+The two images disagree about the block count, littlefs refuses to mount a
+superblock that disagrees, and `_boot.py` reformats. It happens silently and in
+both directions. See
+[restore-factory-firmware.md](restore-factory-firmware.md#the-two-micropython-images).
 
 ## Still open
 
@@ -279,9 +320,7 @@ means building MicroPython with the correct flash size.
   established; not clipping, which shows as runs of 2–3 (see Microphone above).
   They have not been traced to a fault and nothing downstream has yet been shown
   to care, but a median filter is the obvious guard if something does.
-- **The other 13 MB of flash** — the stock `RPI_PICO2` build assumes a 4 MB part.
-  Recovering it needs a custom MicroPython build.
 
 Everything else on the board has been driven: display (full and partial refresh),
-touch, SHTC3, RTC, battery sense, the ES8311 codec, and the microphone at both
-24 and 16 kHz.
+touch, SHTC3, RTC, battery sense, the ES8311 codec, the microphone at both
+24 and 16 kHz, and all 16 MB of the flash.

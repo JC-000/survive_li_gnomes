@@ -40,3 +40,8 @@ enrol-takes/
 # from here (TEMPLATE_BLOB); tools/record_templates.py writes them here.
 src/templates.bin
 src/templates.py
+
+# vendor/tflm: the TensorFlow Lite Micro source tree, fetched by
+# tools/fetch_tflm.sh from two pinned upstream commits. ~20 MB, regenerable,
+# and not ours to version.
+vendor/tflm/

@@ -114,6 +114,7 @@ def bring_up(i2c, rate):
     """Configure the codec and PIO for `rate` and return (codec, audio)."""
     import audio_pio_mpy
     import es8311
+    import listen  # for MIC_GAIN below; section (e) imports it again, locally
 
     Pin(0, Pin.OUT, value=0)  # power amp off: this is a capture test
 
