@@ -123,6 +123,46 @@ UNKNOWN_INDEX = len(CLASSES) - 1
 THRESHOLD = 0.35        # top-1 probability floor  -- costs nothing on this set
 MARGIN = 2.0 / 256.0    # top-1 minus top-2, two output quantisation steps
 
+# An exact tie is forgiven, but only above this probability. Third tuned
+# constant, and the only one measured on data this device did not produce.
+#
+# `MARGIN` above exists to reject ties, on the argument -- which still holds --
+# that an utterance resembling two things equally should produce silence. But
+# ties are *common* here in a way they are not in a float model: the softmax
+# output is dequantised int8 at 1/256, so a genuine two-way split lands on an
+# exact tie rather than near one, and three of the labelled live correct answers
+# were tie-gated (father 0.500, husband 0.492, dream 0.492).
+#
+# The distinction that rescues them: at 1/256 resolution a tie at p ~ 0.5 means
+# two classes took ~128 counts each and everything else took ~0 -- a confident
+# two-way split. A tie at p ~ 0.28 means the mass is spread and nothing stands
+# out. So the tie is forgiven only when the top-1 probability says the split was
+# confident.
+#
+# Measured by si-model over 4106 must-stay-silent and 1858 in-vocabulary
+# synthetic utterances, against forgiving ties unconditionally:
+#
+#     tie allowed when          new correct   new false fires   new wrong keyword
+#     argmax != unknown              +19            +79                +9
+#     that, and top-1 >= 0.49         +3             +1                 0
+#
+# **The unconditional version is 4.6 wrong fires for every right one** and must
+# not be shipped. It looked free on 19 live utterances because 4106 adversarial
+# negatives were not in the room.
+#
+# Corroborated independently on this board's own 22 takes: it admits the one tie
+# there (father, correct, p=0.4922) and no negative can reach it, since every
+# negative came back argmax `unknown`. Precision 1.000 held, recall 0.600 ->
+# 0.700.
+#
+# **It is not free.** On the synthetic set it costs one false fire in 4106, so
+# precision is no longer exactly 1.000 there. That is a real departure from what
+# docs/speech.md asks for, taken because three of ten live keywords is a large
+# fraction of a demo and one in 4106 is not. The distributions overlap -- tying
+# negatives run median 0.441 / max 0.496 against tying correct answers at median
+# 0.453 / max 0.492 -- so 0.49 is where the trade is best, not a clean cut.
+TIE_FLOOR = 0.49
+
 
 class Spotter:
     """Holds the model, the front-end scratch and the patch buffer.
@@ -234,8 +274,15 @@ class Spotter:
         margin = top - second
 
         label = None
-        if best != UNKNOWN_INDEX and top >= THRESHOLD and margin >= MARGIN:
-            label = CLASSES[best]
+        if best != UNKNOWN_INDEX and top >= THRESHOLD:
+            # NOTE: this is not monotonic in `margin`. An exact tie above
+            # TIE_FLOOR fires, while a margin of one quantisation step does not,
+            # because MARGIN is two steps. That is what was measured, so it is
+            # what ships, but it is a wart rather than a design -- raised with
+            # si-model, and the fix if they agree is to make MARGIN one step so
+            # the two conditions meet.
+            if margin >= MARGIN or (margin == 0.0 and top >= TIE_FLOOR):
+                label = CLASSES[best]
         return label, top, margin, best, n_frames, clipped
 
     def spot(self, samples, start, count, pre=None):

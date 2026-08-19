@@ -268,6 +268,50 @@ def per_class(rows, thresh, margin):
     return out
 
 
+def print_steals(rows, limit=12):
+    """Which classes take utterances from which, by plain argmax.
+
+    **This exists because its absence let three live false fires through.** The
+    evaluation used to print per-class *recall* and nothing else, and recall is
+    computed along the rows of a confusion matrix while false fires live in its
+    columns. `money` was firing as `wife` in 16% of synthetic utterances the
+    whole time; nobody saw it until a user said "money" to the device and was
+    asked about his wife.
+
+    So: a per-class recall table shows what each class **misses** and hides what
+    each class **steals**. Both are printed now.
+
+    Reported before any gate, because a confusion that the threshold currently
+    suppresses is still a confusion the model has, and the threshold moves.
+    """
+    steals = {}
+    totals = {}
+    for truth, ranked, _name in rows:
+        if not isinstance(truth, str) or not ranked:
+            continue
+        totals[truth] = totals.get(truth, 0) + 1
+        got = ranked[0][1]
+        if got != truth:
+            steals.setdefault(got, {})
+            steals[got][truth] = steals[got].get(truth, 0) + 1
+    pairs = []
+    for thief, victims in steals.items():
+        for victim, n in victims.items():
+            pairs.append((n, n / max(totals.get(victim, 1), 1), victim, thief))
+    if not pairs:
+        print("\n  no class takes an utterance from another")
+        return
+    pairs.sort(reverse=True)
+    print("\n  what each class steals, worst first (argmax, before any gate)")
+    print("     n    rate  true class  fires as")
+    for n, rate, victim, thief in pairs[:limit]:
+        flag = "   <-- " if rate >= 0.10 and thief != si_features.UNKNOWN else ""
+        print("  %4d  %6.1f%%  %-10s  %s%s"
+              % (n, 100 * rate, victim, thief, flag))
+    if len(pairs) > limit:
+        print("  (%d more pairs)" % (len(pairs) - limit))
+
+
 def print_per_class(rows, thresh, margin):
     print("\n  per-class recall at thresh %.3f, margin %.2f (worst first)"
           % (thresh, margin))
@@ -439,6 +483,7 @@ def main(argv):
     clean_syn, _ = recommend(syn)
     if clean_syn:
         print_per_class(syn, clean_syn[1], clean_syn[0])
+    print_steals(syn)
 
     if args.takes and os.path.isdir(args.takes):
         xr, truths, names, _ = load_takes(args.takes, args.cache, args.jobs)
@@ -467,6 +512,7 @@ def main(argv):
                      "real speech did worse" if delta < 0 else "no change"))
             print_sweep(real, "threshold sweep, real speaker")
             clean, _ = recommend(real)
+            print_steals(real)
             if clean:
                 print_per_class(real, clean[1], clean[0])
                 print("\nconfusion at the recommended real-speaker setting")

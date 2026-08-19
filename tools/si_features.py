@@ -182,6 +182,44 @@ def patch_for_samples(samples, t=None):
     return fit(norm), len(rows), clipped
 
 
+# Endpoint jitter, as a training augmentation.
+#
+# Measured on a real take: moving the endpointed span by five frames -- 50 ms --
+# flips `mother` p=0.656 to `unknown` p=0.875, and lengthening it by ten frames
+# gives `unknown` p=0.938. The live board confirmed the same shape from the
+# other direction: the same speaker's words fire on one press and miss on the
+# next, take by take, with nothing else changing.
+#
+# The SpecAugment time shift already in `si_train` does *not* cover this. That
+# shifts the word within the patch, and `fit()` centre-pads, so position is
+# already handled and the shift is close to a no-op. What actually varies live
+# is **which audio the endpointer includes** -- a swallowed onset, a breath
+# caught in the tail -- and no augmentation modelled it until this one.
+JITTER_FRAMES = 8
+
+
+def jittered_spans(n_samples, start, count, n, rng):
+    """`n` (start, count) pairs around the endpointer's answer, plus the answer.
+
+    Perturbs each edge independently, because the endpointer's two edges fail
+    independently: an onset is lost to a quiet /w/ while the tail is extended by
+    a breath. Moving both together would model a translation, which is the thing
+    `fit()` already absorbs.
+    """
+    out = [(start, count)]
+    span = JITTER_FRAMES * mfcc.FRAME_STRIDE
+    for _ in range(n):
+        a = start + int(rng.integers(-span, span + 1))
+        b = start + count + int(rng.integers(-span, span + 1))
+        if a < 0:
+            a = 0
+        if b > n_samples:
+            b = n_samples
+        if b - a >= mfcc.FRAME_LEN:
+            out.append((a, b - a))
+    return out
+
+
 def patch_for_wav(path, t=None, trim=True):
     """WAV -> (patch, n_raw_frames, clipped). None if endpointing rejects it.
 

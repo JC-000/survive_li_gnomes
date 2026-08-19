@@ -1,0 +1,21 @@
+{
+    "deploy": [
+        "../../../docs/restore-factory-firmware.md"
+    ],
+    "docs": "",
+    "features": [
+        "Battery Charging",
+        "Dual-core",
+        "External Flash",
+        "Audio Codec",
+        "E-Paper",
+        "Touch",
+        "USB-C"
+    ],
+    "images": [],
+    "mcu": "rp2350",
+    "product": "RP2350-Touch-ePaper-1.54",
+    "thumbnail": "",
+    "url": "https://github.com/waveshareteam/RP2350-Touch-ePaper-1.54",
+    "vendor": "Waveshare"
+}

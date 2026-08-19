@@ -191,6 +191,170 @@ Note what that costs the usual way of reporting this: on a single accuracy
 figure these two systems are **indistinguishable**, and the whole difference
 lives in the axis that figure averages away.
 
+## The first fully-labelled live session
+
+Every earlier number came from stored recordings. This is the device, a real
+speaker, one word per press, ground truth from the person speaking. All captures
+clean, 0 clipped across 24 turns. **n=1 take per word, one speaker, one session**
+— but every row has a label, which none of the earlier live data had.
+
+**Keywords, first press (19):**
+
+| | |
+| --- | --- |
+| fired correctly (10) | mother 0.461, sister 0.836, wife 0.902, children 0.891, death 0.898, love 0.656, happy 0.883, yes 0.938, always 0.969, sorry 0.492 |
+| correct but **tie-gated** (3) | father 0.500, husband 0.492, dream 0.492 — all margin 0.000 |
+| missed to unknown (4) | brother 0.871, sleep 0.539, sad 0.957, work 0.430 |
+| **false fires (2)** | **money → wife 0.758**, computer → children 0.441 |
+
+**Negatives (5):** four clean rejections — "I wonder" 0.980, "I don't know"
+0.867, "problem" 0.961, "hello there" 0.957 — and **"another" → brother 0.473**,
+the near-rime attack landing on the CNN exactly where `docs/speech.md` recorded
+it landing on DTW.
+
+**With retries pooled: 13 of 19 words fired correctly at least once.** Brother
+and computer never did; money never did, because it steals to wife.
+
+### The misses are take-sensitive, not word-specific
+
+The first reading of this table was that the misses were stable per word. **They
+are not.** On a single retry, sad, sleep and work all fired — sad 0.809 having
+missed at 0.957, work 0.809 having missed twice, sleep 0.367 scraping over. The
+same speaker, the same word, a different press.
+
+That matters because it changes the fix. Per-word augmentation is not indicated;
+**delivery variance is**, which is the same conclusion the endpoint-sensitivity
+measurement reached from the other direction — 50 ms of endpoint movement flips
+a verdict. Two independent routes to one answer: the model is brittle to *which
+audio the endpointer hands it*, not to particular words.
+
+It also means **any per-class recall from single takes is close to meaningless**
+and should carry an explicit "one take, plus or minus everything" caveat. The
+multi-take evaluation is now more valuable than another architecture.
+
+### brother is the clearest retrain target in the data
+
+Stated carefully, because the pairing is the point:
+
+- **brother: 0 for 3.** The only genuinely stable miss — 0.605, 0.871, 0.742,
+  all to unknown.
+- **"another" → brother: 2 of 3**, at 0.473 and 0.406, both marginal, both
+  clearing the gate; rejected once at 0.828.
+
+**The model never recognises this speaker's "brother" and fires `brother` on his
+"another" two times in three.** The class as trained matches the wrong word.
+
+The synthetic data predicted it: "another" fires brother in **4 of 11**
+utterances, and `brother` receives wrong predictions from `mother` 19 times and
+`father` twice — the family cluster `docs/speech.md` identified from phonetics
+before any of this existed.
+
+Unlike money→wife, these false fires are **weak** (p <= 0.473, margin <= 0.051),
+so a modest margin floor may fence them as an interim measure where it could not
+fence money.
+
+### The tie gate: forgiving a tie is not free, but a probability floor makes it nearly so
+
+Three correct answers were deleted by the margin gate on exact ties, which
+suggests forgiving any tie whose argmax is not `unknown`. Measured against 4106
+must-stay-silent and 1858 in-vocabulary synthetic utterances, that is a bad
+trade — and adding one condition turns it into a good one:
+
+| a tie passes when top-1 p >= | new correct | new false fires | new wrong-keyword |
+| --- | --- | --- | --- |
+| 0.00 (forgive any tie) | +19 | **+79** | +9 |
+| 0.45 | +10 | +31 | +2 |
+| **0.49** | **+3** | **+1** | **0** |
+| 0.55 | 0 | 0 | 0 |
+
+Open, it is **4.6 wrong fires for every right one**. It looked free live because
+nineteen utterances cannot see a seventy-nine-case failure mode.
+
+**With the floor it recovers all three live tie-gated answers** — father 0.500,
+husband 0.492, dream 0.492 — while excluding both marginal false fires
+(computer→children 0.441, another→brother 0.473).
+
+Why a floor works at all: at 1/256 output resolution a tie at p ~ 0.5 means two
+classes took ~128 counts each and everything else ~0 — a confident two-way split.
+A tie at 0.28 means the mass is spread and nothing stands out. But the
+distributions **overlap** — tying negatives median 0.441, tying correct keywords
+median 0.453 — so 0.49 is a tuned operating point, not a clean separation, and
+belongs beside `THRESHOLD` and `MARGIN` where it can be re-tuned.
+
+### Every live confusion was already in the corpus
+
+This is the methodological finding of the session, and it is a failure of
+reporting rather than of data:
+
+| live confusion | rate in synthetic val+test |
+| --- | --- |
+| money → wife | **16.0%** (13 of 81) |
+| "another" → brother | **36%** (4 of 11) |
+| computer → children | 7% (6 of 83) — did not reproduce, treat as one-off |
+| "other" → father | **50%** (5 of 10), not yet seen live |
+
+**Three for three on the confusions that reproduced.** The corpus knew about all
+of them. The evaluation printed per-class *recall* at the recommended threshold
+and never a confusion matrix — so a one-in-six directional collision sat in data
+I had, unnamed, until a user heard it.
+
+**The general form, and it is worth more than the instance: a per-class recall
+table shows what each class misses and hides what each class steals.** Recall is
+computed down the rows of a confusion matrix; false fires live in the columns.
+
+## The retrain: money folded into unknown, endpoint jitter added — and it did not help
+
+Both fixes implemented and measured. `money` folded into `unknown` (210
+utterances, kept in the corpus so the model learns to *reject* the word rather
+than never seeing it), plus **endpoint-jitter augmentation**: each training
+utterance re-extracted at two additional spans with each edge perturbed
+independently by up to 8 frames, 17000 extra patches.
+
+| | before (`si_real`) | after (`si_jit`) |
+| --- | --- | --- |
+| synthetic val top-1 | 0.850 | **0.873** |
+| **real speaker top-1** | **0.700** | **0.600** |
+| real precision-1.000 recall | 0.500 | 0.500 |
+
+**Better on synthetic, worse on the real speaker.** Exactly the pattern the width
+sweep produced, and the second demonstration that synthetic accuracy does not
+select a model here.
+
+What it fixed and what it broke, per file:
+
+| fixed | broke |
+| --- | --- |
+| "another" → unknown 0.977 *(was brother)* | **"wonder" → mother 0.793** — a new, strong false fire on a negative |
+| "other" → unknown 0.887 | wife → **work** 0.680 *(was correct)* |
+| "brothers", "mothers" → unknown | mother → unknown 0.809 *(was correct at 0.656)* |
+| money removed as a fire source entirely | dream → unknown 0.832 |
+
+So the near-rime family — another, other, brothers, mothers — is genuinely
+fixed, and `money → wife` is gone by construction. In exchange the model
+acquired `wonder → mother`, which is the *same near-rime attack it just learned
+to reject*, arriving from a different direction and at higher confidence than
+any of the ones it fixed.
+
+**This model is not shipped.** `si_real` remains the deployed one.
+
+### What the retrain actually established
+
+Not that jitter augmentation fails — that is not measurable here. **That the
+real test set cannot tell.** Real top-1 0.700 against 0.600 is one utterance out
+of ten; the false-fire changes are one or two out of twelve. Every number moved
+by less than the noise floor of a ten-word test set.
+
+This is now the third independent route to the same conclusion — the width
+sweep, the per-word miss pattern that turned out to be take-sensitivity, and now
+a substantive retrain. **The binding constraint on this project is not the
+model, the corpus, or the device. It is that there are ten keywords and twelve
+negatives from one speaker, and that is too few to detect any change worth
+making.**
+
+Everything in [the protocol](#the-protocol-for-the-user-to-run-without-us) is
+downstream of that. Five speakers would not merely add confidence to these
+numbers; they would be the first evidence capable of ranking two models at all.
+
 ## The sweep, and what it says for a room of strangers
 
 `--unknown-weight` and `--width`, on the full 16030-utterance corpus (8 training
