@@ -16,11 +16,57 @@ records the divergence this document exists to remove.
 >
 > | | measured | against |
 > | --- | --- | --- |
-> | bit-identical output tensors | **30 / 30** | TinyMaix: 3 of 8 patches change top-1 |
+> | bit-identical output tensors, **host and board** | **30 / 30** | TinyMaix: 3 of 8 patches change top-1 |
 > | flash, **measured in a real rp2 image** | **+79,444 B** stripped, +127,768 B with diagnostics | 710,192 B was free in the 1 MB reserve; **630,748 B still is** |
 > | static RAM (`.bss`), same image | **+8 B** stripped, +392 B with diagnostics | — |
-> | tensor arena, 64-bit host | **28,664 B** | TinyMaix path: ~55.6 KB resident |
-> | inference time on the board | **not measured** | TinyMaix: 66.6 ms |
+> | tensor arena, on the board | **56,964 B** incl. the model copy | TinyMaix path: ~55.6 KB resident |
+> | **inference, on the board** | **245.6 ms** | TinyMaix: 66.6 ms — **3.7x slower** |
+>
+> ## Confirmed on silicon, 2026-08-19
+>
+> **30 / 30 bit-identical on the board**, worst count 0, via
+> `tools/tflm_probe.py` and `tools/check_tflm_device.py` (run by fw-16mb; the
+> port was never mine). Host TFLM = host TFLite reference kernels = the
+> RP2350. The arithmetic ambiguity this document exists to remove is gone, and
+> every host number measured under reference kernels is now a device number by
+> construction.
+>
+> | | predicted here | measured on the board |
+> | --- | --- | --- |
+> | output tensors bit-identical | — | **30 / 30**, worst count 0 |
+> | arena | "~25.5 KB, lower than the host's 28,664 — not measured" | **56,964 B including the model copy**, against 58,752 on the host — lower, as predicted |
+> | static RAM | +8 B from the link map | import 0 B, `new()` 32 B |
+> | 1/256 output quantisation | checked on the host | holds on silicon, worst departure **exactly 0** |
+> | **inference** | **unmeasured** | **245,570 µs — 245.6 ms** |
+>
+> **245.6 ms is 3.7x TinyMaix's 66.6 ms, and that is a real cost, not noise.**
+> It is the expected direction — reference kernels against a runtime tuned for
+> speed — and it is bought with the only thing that made the operating point
+> trustworthy. But it should be stated against the measured budget rather than
+> against the panel alone: `docs/cnn-on-device.md` has recognition at 317 ms
+> with 66.6 ms of inference, so this takes recognition to ~496 ms and a turn
+> from ~940 ms to **~1120 ms**, about 19% slower end to end. Shippable for a
+> toy whose failure mode is a deflection. It also makes CMSIS-NN a live
+> question rather than the theoretical one filed below — against the standing
+> caveat that CMSIS-NN is tested to ±1 count and ±1 count is the whole of
+> `si_spot.MARGIN`.
+>
+> The first run FAILED, and not because of the board: every `runtime=tinymaix`
+> case raised `TypeError: object with buffer protocol required`, because the
+> probe handed `emlearn` a plain `bytes`. That defect is documented in three
+> places in this repository and was walked into anyway, since no host carries
+> `emlearn_cnn_int8` and the branch had therefore never executed anywhere.
+> `tools/test_tflm_probe_tinymaix.py` now exercises it against a stub that is
+> strict in the same way. **The `PROBE-ERROR` tagging did its job**: the
+> checker failed the run, named the cause as a bug in the probe, and nobody
+> spent a minute suspecting the silicon.
+>
+> **Still not measured**: TinyMaix's paired numbers from the same session, which
+> is what the failed half cost, and everything downstream of a live microphone.
+>
+> **The one thing that still needs the board**: nothing below this box has *run* on an RP2350.
+>
+> <details><summary>What this section said before the board ran</summary>
 >
 > **The one thing not measured is the one that needs the board**: nothing here
 > has *run* on an RP2350. What exists is a **complete rp2 firmware image
@@ -32,6 +78,8 @@ records the divergence this document exists to remove.
 >
 > The 16 MB image currently flashed on the hardware does **not** contain this
 > module, and nothing here changed it.
+>
+> </details>
 >
 > **And one existing figure is not what it says it is.** The recorded `.tflite`
 > operating point — threshold 0.598, precision 1.000 at recall **0.500** — was
@@ -338,7 +386,13 @@ reflashing to retrain, and the model is still changing.
 
 ### Speed
 
-**Not measured on the board.** For scale, the host (arm64 M-series, reference
+**Measured on the board: 245,570 µs — 245.6 ms.** 3.7x TinyMaix's 66.6 ms; see
+the box at the top for what that does to a turn. The prediction below —
+"unlikely to be dramatically worse" — was wrong, and is left standing because
+the size of the error is the useful part: reference kernels are not a modest
+constant off an optimised runtime.
+
+For scale, the host (arm64 M-series, reference
 kernels, `-O2`) runs `si_real` in **0.838 ms**. That says nothing useful about
 a 150 MHz M33 except that the reference kernels are not pathological.
 
@@ -622,16 +676,21 @@ is a coincidence.
 
 In the order they matter.
 
-1. **Nothing has run on an RP2350.** The module is proved under the unix port,
-   proved to link for M33, and its cmake is proved to configure inside the real
-   rp2 build — but no rp2 image containing it has been compiled, and the 16 MB
-   image now on the board does not contain it. The first board session should run
+1. ~~**Nothing has run on an RP2350.**~~ **Closed 2026-08-19: 30/30
+   bit-identical on the board.** See the box at the top. What follows is what
+   that session did *not* settle. The original text: the first board session
+   should run
    `tools/test_tflm_module.py` and then re-run the 30 cases and check them byte
    for byte against the host — `docs/cnn-on-device.md`'s standing rule is that
    a clean import is not the test.
-2. **Inference time on the board is unknown.** If TFLM's reference kernels come
-   in far above TinyMaix's 66.6 ms, the decision is CMSIS-NN versus a slower
-   turn, and section 2 argues that trade is not obviously worth taking.
+2. ~~**Inference time on the board is unknown.**~~ **Measured: 245.6 ms, 3.7x
+   TinyMaix.** That is above the level at which the question answers itself, so
+   the trade section 2 describes is now live rather than hypothetical: a ~19%
+   slower turn against CMSIS-NN kernels that are tested to ±1 count and not to
+   equality, where ±1 count is the whole of `si_spot.MARGIN`. **The
+   recommendation does not change on this measurement alone** — 245.6 ms is
+   affordable and correctness is what was bought — but it is now a decision
+   with a number under it rather than a preference.
 3. **The operating point moves, and this time in a direction that can be
    predicted.** `si_spot.py`'s `THRESHOLD`, `MARGIN` and `TIE_FLOOR` were tuned
    on TinyMaix, on the board. Under TFLM the right values are the ones tuned on

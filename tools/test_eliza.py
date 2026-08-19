@@ -115,7 +115,7 @@ class TestNormalise(unittest.TestCase):
     def test_answers_the_first_clause_only(self):
         doctor = eliza.Doctor()
         self.assertEqual(doctor.respond("I need some help, that much seems certain"),
-                         "WHAT WOULD IT MEAN TO YOU IF YOU GOT SOME HELP")
+                         "WHAT WOULD IT MEAN TO YOU IF YOU GOT SOME HELP?")
 
     def test_breaks_on_but(self):
         doctor = eliza.Doctor()
@@ -202,7 +202,8 @@ class TestBagMode(unittest.TestCase):
         for bag in bags:
             for _ in range(3):     # rotate, so every template gets a turn
                 reply = doctor.respond_to_keywords(bag, nouns=self.NOUNS)
-                self.assertFalse(any(w.isdigit() for w in reply.split()),
+                self.assertFalse(any(eliza.slot_of(w) is not None
+                                     for w in reply.split()),
                                  "unfilled slot for %r: %r" % (bag, reply))
                 self.assertNotIn("  ", reply)
                 self.assertTrue(reply.strip())
@@ -228,7 +229,8 @@ class TestBagMode(unittest.TestCase):
         for _ in range(8):
             reply = doctor.respond_to_keywords(["MY"], nouns=self.NOUNS)
             self.assertFalse(reply.endswith("YOUR"), reply)
-            self.assertFalse(any(w.isdigit() for w in reply.split()), reply)
+            self.assertFalse(any(eliza.slot_of(w) is not None
+                                 for w in reply.split()), reply)
 
     def test_literal_slot_is_filled_from_the_word_class(self):
         doctor = eliza.Doctor(priority={"I": 6})
@@ -319,7 +321,8 @@ class TestDegradedAcceptance(unittest.TestCase):
         for text in self.UTTERANCES:
             spotted = self.bag(text)
             reply = doctor.respond_to_keywords(spotted, nouns=self.NOUNS)
-            if any(word in reply.split() for word in spotted):
+            bare = [w.rstrip("?.!,") for w in reply.split()]
+            if any(word in bare for word in spotted):
                 echoed += 1
         self.assertGreaterEqual(echoed, len(self.UTTERANCES) // 3,
                                 "only %d of %d echoed" % (echoed, len(self.UTTERANCES)))
@@ -512,8 +515,9 @@ class TestVocabContract(unittest.TestCase):
         own = set()
         for pattern, templates in rules.RULES["I"][2]:
             if any(isinstance(e, tuple) and "WANT" in e for e in pattern):
-                for _kind, payload in templates:
-                    own.add(" ".join(w for w in payload.split() if not w.isdigit()))
+                for _kind, _mood, payload in templates:
+                    own.add(" ".join(w.rstrip("?.!") for w in payload.split()
+                                     if not w.rstrip("?.!,").isdigit()))
 
         self.assertTrue(own, "the WANT/NEED rule vanished from the script")
 
@@ -570,7 +574,7 @@ class TestVocabContract(unittest.TestCase):
         for noun in self.vocab.NOUNS:
             for _ in range(6):
                 reply = doctor.respond_to_keywords([noun], nouns=self.vocab.NOUNS)
-                if noun in reply.split():
+                if noun in [w.rstrip("?.!,") for w in reply.split()]:
                     break
             else:
                 self.fail("%s is never echoed back" % noun)
@@ -655,6 +659,206 @@ class TestReplPreviewsTheDevice(unittest.TestCase):
                          ["BECAUSE", "REMEMBER"])
 
 
+class TestNoFragmentsOnThePanel(unittest.TestCase):
+    """No reply the device can produce may read as a truncated sentence.
+
+    A user on the hardware reported "YOUR BROTHER" as "a sentence fragment and
+    not a follow on question". They were right about the reading and the
+    rendering was correct: it is DOCTOR's own bare echo, faithfully reproduced.
+    What changed is the medium. On a teletype the reply scrolled past and the
+    next prompt line delimited it; alone on a 200x200 panel it is the only text
+    on screen, and unfinished text reads as a broken UI.
+
+    So every reply now carries a mood and the punctuation that goes with it.
+    These tests assert it against the real rule data rather than a hand-list,
+    because a hand-list would not have caught the ones nobody thought of.
+    """
+
+    NOUNS = ("MOTHER", "FATHER", "WIFE", "HUSBAND", "SISTER", "BROTHER",
+             "CHILDREN", "WORK", "MONEY", "SLEEP", "DEATH", "LOVE")
+
+    def replies(self):
+        """Every reply template, with its mood."""
+        out = []
+        for keyword, (rank, goto, ruleset) in rules.RULES.items():
+            for pattern, templates in ruleset:
+                for kind, mood, payload in templates:
+                    if kind in (rules.GOTO, rules.NEWKEY, rules.PRE):
+                        continue
+                    out.append((keyword, kind, mood, payload))
+        out += [("NONE", rules.CANNED, None, t) for t in rules.NONE]
+        out += [("MEMORY", rules.PHRASE, m, t) for _, m, t in rules.MEMORY]
+        return out
+
+    def test_every_reply_is_terminated(self):
+        found = self.replies()
+        self.assertGreater(len(found), 150, "rule data collapsed")
+        for keyword, kind, mood, payload in found:
+            self.assertIn(payload[-1:], ("?", ".", "!"),
+                          "%s: unterminated %r" % (keyword, payload))
+
+    def test_every_reply_has_a_mood(self):
+        for keyword, kind, mood, payload in self.replies():
+            if keyword == "NONE":
+                continue          # NONE is a plain tuple of strings
+            self.assertIn(mood, (rules.QUESTION, rules.STATEMENT, rules.ECHO),
+                          "%s: %r" % (keyword, payload))
+
+    def test_mood_and_punctuation_agree(self):
+        # The voice build reads mood; the panel reads the mark. They must not
+        # disagree, or a rising reply gets a full stop read aloud.
+        for keyword, kind, mood, payload in self.replies():
+            if mood is None:
+                continue
+            expected = "." if mood == rules.STATEMENT else "?"
+            self.assertEqual(payload[-1], expected,
+                             "%s: %s but %r" % (keyword, mood, payload))
+
+    def test_echo_templates_are_questions_not_statements(self):
+        """The reported bug: a bare echo must be a prompt, never an assertion."""
+        echoes = [p for _, _, m, p in self.replies() if m == rules.ECHO]
+        self.assertGreaterEqual(len(echoes), 8, "ECHO class collapsed")
+        for payload in echoes:
+            self.assertTrue(payload.endswith("?"), payload)
+
+    def test_the_reported_reply_reads_as_a_prompt(self):
+        doctor = eliza.Doctor(priority={"MY": 6, "I": 2})
+        for _ in range(8):
+            reply = doctor.respond_to_keywords(["BROTHER"], nouns=self.NOUNS)
+            if "BROTHER" in reply:
+                self.assertTrue(reply.endswith("?") or reply.endswith("."), reply)
+                if reply.rstrip("?.").endswith("BROTHER"):
+                    self.assertTrue(reply.endswith("?"),
+                                    "bare echo rendered as a statement: %r" % reply)
+                break
+        else:
+            self.fail("BROTHER was never echoed")
+
+    def test_no_device_reply_is_a_bare_frame(self):
+        """A reply must never be framing with the slot missing -- "YOUR?".
+
+        This is what an unfilled ECHO slot looks like once punctuation is
+        attached, and it is invisible to a digit check because the digit is
+        gone. It shipped for one commit while _plant still matched on a bare
+        isdigit() and rendered "YOUR?" for every untagged noun.
+        """
+        doctor = eliza.Doctor(priority={"MY": 6, "I": 2})
+        bags = [[k] for k in rules.RULES]
+        bags += [[n] for n in self.NOUNS]
+        bags += [[k, n] for k in rules.RULES for n in self.NOUNS[:4]]
+        checked = 0
+        for bag in bags:
+            for _ in range(3):
+                reply = doctor.respond_to_keywords(bag, nouns=self.NOUNS)
+                checked += 1
+                bare = reply.rstrip("?.!").split()
+                # A one-word reply is fine when it is a wh-question -- "WHEN?"
+                # after "always" is idiomatic English and a real follow-up.
+                # Anything else of one word is a frame with its slot missing.
+                if len(bare) == 1:
+                    self.assertIn(bare[0],
+                                  ("WHEN", "HOW", "WHY", "WHO", "WHERE", "WHAT"),
+                                  "one-word reply %r for %s" % (reply, bag))
+                    self.assertTrue(reply.endswith("?"), reply)
+                # Only the possessives: a question may legitimately strand a
+                # preposition ("WHAT INCIDENT ARE YOU THINKING OF?"), but a
+                # determiner with nothing after it is always a missing slot.
+                self.assertNotIn(bare[-1], ("YOUR", "MY"),
+                                 "dangling frame %r for %s" % (reply, bag))
+        self.assertGreater(checked, 200)
+
+    def test_sentence_case_keeps_the_terminal_mark(self):
+        self.assertEqual(eliza.sentence_case("YOUR BROTHER?"), "Your brother?")
+        self.assertEqual(eliza.sentence_case("PLEASE GO ON."), "Please go on.")
+
+    def test_slot_of_tolerates_punctuation(self):
+        self.assertEqual(eliza.slot_of("3"), 3)
+        self.assertEqual(eliza.slot_of("3?"), 3)
+        self.assertEqual(eliza.slot_of("4."), 4)
+        self.assertIsNone(eliza.slot_of("YOUR"))
+        self.assertIsNone(eliza.slot_of("YOUR?"))
+
+
+class TestPanelBudget(unittest.TestCase):
+    """Replies must still fit the panel now that they are a character longer.
+
+    screen.py renders at 12 columns x 9 lines at scale 2, and device-io measured
+    the worst case at exactly 9 lines with a six-word echo in every slot -- no
+    headroom at all. Adding terminal punctuation was therefore not obviously
+    free, and it is not: two templates tip to 10 lines under that stress input
+    and drop to the 8-pixel size. Both are unreachable from the device (one is
+    PHRASE, filtered in bag mode; the other is MEMORY, which only fills on the
+    ordered path the device never uses), and at the one-word echo the device
+    actually produces there are three lines to spare.
+
+    This pins both numbers so the next person to lengthen a template finds out
+    here rather than on the glass.
+    """
+
+    COLUMNS = 12
+    MAX_LINES = 9
+
+    def replies(self):
+        out = [p for _, _, rs in rules.RULES.values() for _, ts in rs
+               for k, m, p in ts
+               if k in (rules.CANNED, rules.LITERAL, rules.NOUN, rules.PHRASE)]
+        return out + list(rules.NONE) + [t for _, _, t in rules.MEMORY]
+
+    def spoken(self):
+        """Only what the degraded path can put on the panel."""
+        out = [p for _, _, rs in rules.RULES.values() for _, ts in rs
+               for k, m, p in ts if k in rules.SPOTTABLE]
+        return out + list(rules.NONE)
+
+    def lines(self, template, echo):
+        filled = []
+        for word in template.split():
+            mark = ""
+            while word[-1:] in "?.!,":
+                mark = word[-1] + mark
+                word = word[:-1]
+            index = eliza.slot_of(word)
+            filled.append((echo if index is not None else word) + mark)
+        return len(eliza_wrap(" ".join(filled), self.COLUMNS))
+
+    def test_device_reachable_replies_fit_with_room(self):
+        # The device echoes exactly one spotted noun, never a phrase.
+        worst = max(self.lines(t, "CHILDREN") for t in self.spoken())
+        self.assertLessEqual(worst, self.MAX_LINES - 2,
+                             "no headroom left at a one-word echo: %d lines" % worst)
+
+    def test_only_the_known_two_overflow_under_stress(self):
+        echo = "my mother always shouts at me"
+        over = [t for t in self.replies() if self.lines(t, echo) > self.MAX_LINES]
+        self.assertEqual(len(over), 2, "overflow set changed: %r" % over)
+        for template in over:
+            self.assertNotIn(template, self.spoken(),
+                             "an overflowing template became device-reachable")
+
+
+def eliza_wrap(text, cols):
+    """magic8.wrap without importing framebuf, which the host does not have."""
+    lines = []
+    line = ""
+    for word in text.split():
+        while len(word) > cols:
+            if line:
+                lines.append(line)
+                line = ""
+            lines.append(word[:cols])
+            word = word[cols:]
+        if not line:
+            line = word
+        elif len(line) + 1 + len(word) <= cols:
+            line += " " + word
+        else:
+            lines.append(line)
+            line = word
+    if line:
+        lines.append(line)
+    return lines
+
+
 class TestAssumptionGuards(unittest.TestCase):
     """Assumption has to stay assumption, not invention."""
 
@@ -698,12 +902,14 @@ class TestTranscript(unittest.TestCase):
     def test_canonical_exchanges(self):
         doctor = eliza.Doctor()
         for said, expected in (
-            ("Men are all alike", "IN WHAT WAY"),
+            ("Men are all alike", "IN WHAT WAY?"),
             ("They are always bugging us about something or other",
-             "CAN YOU THINK OF A SPECIFIC EXAMPLE"),
+             "CAN YOU THINK OF A SPECIFIC EXAMPLE?"),
             ("Well, my boyfriend made me come here",
-             "YOUR BOYFRIEND MADE YOU COME HERE"),
-            ("I am unhappy", "I AM SORRY TO HEAR YOU ARE UNHAPPY"),
+             # An ECHO template ("YOUR 3?") -- on the ordered path its slot
+             # swallows a whole clause, and it is still a question.
+             "YOUR BOYFRIEND MADE YOU COME HERE?"),
+            ("I am unhappy", "I AM SORRY TO HEAR YOU ARE UNHAPPY."),
         ):
             self.assertEqual(doctor.respond(said), expected, said)
 
@@ -714,7 +920,7 @@ class TestTranscript(unittest.TestCase):
         # most obvious way for it to look broken.
         doctor = eliza.Doctor()
         self.assertEqual(doctor.respond("You are not very aggressive"),
-                         "WHAT MAKES YOU THINK I AM NOT VERY AGGRESSIVE")
+                         "WHAT MAKES YOU THINK I AM NOT VERY AGGRESSIVE?")
 
 
 class TestSentenceCase(unittest.TestCase):
@@ -739,7 +945,7 @@ class TestRuleData(unittest.TestCase):
         templates = [t for _, _, ruleset in rules.RULES.values()
                      for _, ts in ruleset for t in ts]
         kinds = {}
-        for kind, _ in templates:
+        for kind, _mood, _payload in templates:
             kinds[kind] = kinds.get(kind, 0) + 1
         replies = sum(kinds.get(k, 0)
                       for k in (rules.CANNED, rules.LITERAL, rules.NOUN, rules.PHRASE))
@@ -761,7 +967,7 @@ class TestRuleData(unittest.TestCase):
             if goto:
                 self.assertIn(goto, rules.RULES, keyword)
             for _, templates in ruleset:
-                for kind, payload in templates:
+                for kind, _mood, payload in templates:
                     if kind == rules.GOTO:
                         self.assertIn(payload, rules.RULES, keyword)
                     elif kind == rules.PRE:
@@ -770,12 +976,13 @@ class TestRuleData(unittest.TestCase):
     def test_every_slot_refers_to_a_real_component(self):
         for keyword, (rank, goto, ruleset) in rules.RULES.items():
             for pattern, templates in ruleset:
-                for kind, payload in templates:
+                for kind, _mood, payload in templates:
                     if kind in (rules.GOTO, rules.NEWKEY, rules.PRE):
                         continue
                     for word in payload.split():
-                        if word.isdigit():
-                            self.assertLessEqual(int(word), len(pattern),
+                        index = eliza.slot_of(word)
+                        if index is not None:
+                            self.assertLessEqual(index, len(pattern),
                                                  "%s: %r" % (keyword, payload))
 
     def test_classification_is_self_consistent(self):
@@ -784,13 +991,15 @@ class TestRuleData(unittest.TestCase):
         # bug where control forms were being counted as canned replies.
         for keyword, (rank, goto, ruleset) in rules.RULES.items():
             for pattern, templates in ruleset:
-                for kind, payload in templates:
+                for kind, _mood, payload in templates:
+                    if kind in (rules.GOTO, rules.NEWKEY, rules.PRE):
+                        continue          # control forms carry no reply text
+                    slots = [eliza.slot_of(w) for w in payload.split()]
+                    slots = [i for i in slots if i is not None]
                     if kind == rules.CANNED:
-                        self.assertFalse(any(w.isdigit() for w in payload.split()),
-                                         "%s: %r" % (keyword, payload))
+                        self.assertFalse(slots, "%s: %r" % (keyword, payload))
                     elif kind in (rules.LITERAL, rules.NOUN, rules.PHRASE):
-                        self.assertTrue(any(w.isdigit() for w in payload.split()),
-                                        "%s: %r" % (keyword, payload))
+                        self.assertTrue(slots, "%s: %r" % (keyword, payload))
 
     def test_tagged_words_cover_the_family_list(self):
         family = [w for w, tags in rules.TAGS.items() if "FAMILY" in tags]

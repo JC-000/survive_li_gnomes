@@ -95,6 +95,101 @@ EXTRA_CLASS_MEMBERS = {
     "HAPPY": ("BETTER",),
 }
 
+# --- Mood, and why the script's replies get punctuation it never had ---------
+#
+# The 1966 script carries no terminal punctuation at all. On a teletype that
+# costs nothing: replies scroll past in a transcript and the next prompt line
+# delimits them. Alone on a 200x200 panel, one reply and nothing else, the same
+# text reads as unfinished -- and the shortest ones read as broken. A user on
+# the device reported "YOUR BROTHER" as "a sentence fragment and not a follow on
+# question", which is exactly right about how it reads and exactly wrong about
+# what it is: DOCTOR's bare echo is an invitation to go on, and on a teletype it
+# looked like one.
+#
+# So every reply is tagged with a mood and given the punctuation that goes with
+# it. Same trade as the I -> ME fix in eliza.fill: authenticity loses to
+# legibility when the medium changed underneath the text.
+#
+# The tag is data rather than a rule in the display code because it has a second
+# consumer. Spoken (see docs/speech-voice.md), a falling "Your brother." and a
+# rising "Your brother?" are different renders, and ECHO wants a shorter, higher
+# rise than a full question does -- so the distinction has to survive out of
+# this file, not be re-derived from a question mark downstream.
+QUESTION = "Q"     # a full question. Rising. Gets "?"
+STATEMENT = "S"    # a complete sentence. Falling. Gets "."
+ECHO = "E"         # the user's own word handed back as a prompt. Gets "?"
+
+_WH = ("WHAT", "WHY", "WHO", "WHEN", "WHERE", "HOW", "WHICH", "WHOM", "WHOSE")
+
+_AUX = ("DO", "DOES", "DID", "IS", "ARE", "AM", "WAS", "WERE", "CAN", "COULD",
+        "WOULD", "SHOULD", "SHALL", "WILL", "HAVE", "HAS", "HAD", "SUPPOSE",
+        "WHETHER", "ARENT", "DONT", "DOESNT", "ISNT", "WASNT", "CANT", "WONT")
+
+# Enough of a verb list to tell "PLEASE GO ON" from "YOUR 4". Only consulted for
+# templates short enough to be fragments, so it does not have to be complete.
+_VERBS = ("SEE", "THINK", "FEEL", "KNOW", "BELIEVE", "WANT", "NEED", "TELL",
+          "SAY", "SAYS", "SAID", "GO", "GOT", "COME", "MEAN", "MEANS",
+          "SUGGEST", "SUGGESTS", "HELP", "LIKE", "WISH", "REMEMBER", "FORGET",
+          "TRIED", "TRY", "APOLIGIZE", "APOLOGIZE", "DISCUSS", "EXPLAIN",
+          "TALK", "UNDERSTAND", "SEEM", "SEEMS", "MAKES", "MADE", "MENTIONED",
+          "BRING", "REMINDS", "DEPENDS", "BELONGS", "ASK", "TAKE", "LET",
+          "LETS", "STATE", "ELABORATE", "PROVE", "ENJOY", "HATE", "INSIST",
+          "BOTHERS", "HEAR", "MIND", "BE", "BEEN", "GETTING", "WANTING",
+          "THINKING", "SURE", "CONCERNED", "WORRIED", "WORRY", "PLEASE")
+
+# Hand-set moods for templates the heuristic reads wrongly. Kept short on
+# purpose -- if this grows past a handful the heuristic is the thing to fix.
+MOOD_OVERRIDES = {
+    # Elliptical, but a genuine question rather than an echo of the user.
+    "SOMEONE SPECIAL PERHAPS": QUESTION,
+}
+
+
+def mood_of(template):
+    """QUESTION, STATEMENT or ECHO for one reassembly.
+
+    ECHO is the case that prompted all this: a template that is essentially the
+    user's own word handed straight back, with at most a couple of words of
+    framing and no verb of its own -- "YOUR 4", "REALLY, 2", "BUT YOUR 3".
+    Those are prompts, not sentences, and a full stop would be a lie about what
+    they are.
+    """
+    if template in MOOD_OVERRIDES:
+        return MOOD_OVERRIDES[template]
+
+    words = template.split()
+    plain = [w.strip(",.'").upper() for w in words]
+
+    # A wh-word anywhere makes it a question: "IN WHAT WAY", "WHO, FOR EXAMPLE".
+    if any(w in _WH for w in plain):
+        return QUESTION
+    if plain and plain[0] in _AUX:
+        return QUESTION
+
+    # A contraction carries its own verb -- "THAT'S", "DON'T", "AREN'T".
+    if any("'" in w for w in words):
+        return STATEMENT
+
+    # The copulas count as verbs wherever they appear, not just as an opener:
+    # "POSSIBLY THEY ARE 3" and "PERHAPS I WAS 4" are sentences, and a question
+    # mark on either would be a different reply from the one Weizenbaum wrote.
+    framing = [w for w in plain if not w.isdigit()]
+    if len(framing) <= 3 and not any(w in _VERBS or w in _AUX for w in framing):
+        return ECHO
+    return STATEMENT
+
+
+def punctuate(template, mood):
+    """Give a reply the terminal mark its mood implies.
+
+    Applied here rather than in the display code so that every consumer -- the
+    panel, the REPL, and eventually the voice build -- gets the same text, and
+    so a reply cannot reach a screen unpunctuated because a caller forgot.
+    """
+    if template[-1:] in ("?", ".", "!"):
+        return template
+    return template + ("." if mood == STATEMENT else "?")
+
 
 def parse(text):
     """The script's parenthesised list structure -> nested Python lists."""
@@ -209,17 +304,20 @@ def compile_template(node, decomposition):
         ("P", ("I ARE 3", "YOU")) (PRE (I ARE 3) (=YOU)) -- rewrite, then goto
     """
     if node and node[0] == "NEWKEY":
-        return (NEWKEY, None)
+        return (NEWKEY, None, None)
 
     if node and node[0] == "PRE":
         rewrite = " ".join(str(t) for t in node[1])
         target = node[2][0].lstrip("=")
-        return (PRE, (rewrite, target))
+        return (PRE, None, (rewrite, target))
 
     text = " ".join(t if isinstance(t, str) else " ".join(t) for t in node)
     if text.startswith("="):
-        return (GOTO, text[1:])
-    return (classify(text, decomposition), text)
+        return (GOTO, None, text[1:])
+    # PRE rewrites are input, not output, so they are never punctuated; every
+    # other reply is, here, once, for every consumer.
+    mood = mood_of(text)
+    return (classify(text, decomposition), mood, punctuate(text, mood))
 
 
 def build(top):
@@ -248,9 +346,11 @@ def build(top):
             templates = []
             for block in form[2:]:
                 split = block.index("=")
+                text = " ".join(block[split + 1:])
                 templates.append((
                     compile_decomposition(block[:split]),
-                    " ".join(block[split + 1:]),
+                    mood_of(text),
+                    punctuate(text, mood_of(text)),
                 ))
             memory = (form[1], tuple(templates))
             continue
@@ -296,7 +396,7 @@ def build(top):
             rules.append((decomposition, templates))
 
         if head == "NONE":
-            none = tuple(t[1] for t in rules[0][1])
+            none = tuple(t[2] for t in rules[0][1])
             continue
 
         if rules or goto:
@@ -342,12 +442,29 @@ def render(greeting, subs, tags, keywords, memory, none):
     w('    GOTO     ("G", "WHAT")             answer as if WHAT had matched')
     w('    NEWKEY   ("K", None)               abandon this keyword, try the next')
     w('    PRE      ("P", ("I ARE 3", "YOU")) rewrite the input, then goto')
+    w("")
+    w("Every reply also carries a mood, and the terminal punctuation that goes")
+    w("with it. The 1966 script has none: on a teletype the next prompt line")
+    w("delimited a reply, but alone on a 200x200 panel the same text reads as")
+    w("unfinished, and the short ones read as broken.")
+    w("")
+    w("    QUESTION   a full question. Rising. Gets \"?\"")
+    w("    STATEMENT  a complete sentence. Falling. Gets \".\"")
+    w("    ECHO       the user's own word handed back as a prompt. Gets \"?\"")
+    w("")
+    w("ECHO is separate from QUESTION because it is the case that reads as a")
+    w("fragment -- \"YOUR 4\", \"REALLY, 2\" -- and because spoken it wants a")
+    w("shorter, higher rise than a full question. Control forms carry None.")
     w('"""')
     w("")
     w('CANNED = "C"')
     w('LITERAL = "L"')
     w('NOUN = "N"')
     w('PHRASE = "T"')
+    w("")
+    w('QUESTION = "Q"')
+    w('STATEMENT = "S"')
+    w('ECHO = "E"')
     w("")
     w('GOTO = "G"')
     w('NEWKEY = "K"')
@@ -372,7 +489,7 @@ def render(greeting, subs, tags, keywords, memory, none):
         w("    %r: %r," % (key, tags[key]))
     w("}")
     w("")
-    w("# keyword -> (rank, goto, ((decomposition, ((kind, payload), ...)), ...))")
+    w("# keyword -> (rank, goto, ((decomposition, ((kind, mood, payload), ...)), ...))")
     w("#")
     w("# Rank arbitrates when the input contains several keywords; the script")
     w("# gives COMPUTER 50 so that talking about machines wins over anything else.")
@@ -382,8 +499,8 @@ def render(greeting, subs, tags, keywords, memory, none):
         w("    %r: (%d, %r, (" % (key, rank, goto))
         for decomposition, templates in rules:
             w("        (%r, (" % (decomposition,))
-            for kind, payload in templates:
-                w("            (%r, %r)," % (kind, payload))
+            for kind, mood, payload in templates:
+                w("            (%r, %r, %r)," % (kind, mood, payload))
             w("        )),")
         w("    )),")
     w("}")
@@ -393,8 +510,8 @@ def render(greeting, subs, tags, keywords, memory, none):
     w("# understood nothing. It is the single cheapest trick in the script.")
     w("MEMORY_KEYWORD = %r" % memory[0])
     w("MEMORY = (")
-    for decomposition, template in memory[1]:
-        w("    (%r, %r)," % (decomposition, template))
+    for decomposition, mood, template in memory[1]:
+        w("    (%r, %r, %r)," % (decomposition, mood, template))
     w(")")
     w("")
     w("# Last resort, when there is no keyword and nothing in memory.")
@@ -423,7 +540,7 @@ def main():
     counts = {}
     for rank, goto, rules in keywords.values():
         for decomposition, templates in rules:
-            for kind, payload in templates:
+            for kind, _mood, payload in templates:
                 counts[kind] = counts.get(kind, 0) + 1
     total = sum(counts.get(k, 0) for k in (CANNED, LITERAL, NOUN, PHRASE))
 

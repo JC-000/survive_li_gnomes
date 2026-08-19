@@ -462,11 +462,11 @@ def _longest_reply():
     texts = []
     for _rank, _sub, decomps in eliza_rules.RULES.values():
         for _pattern, templates in decomps:
-            for kind, text in templates:
+            for kind, _mood, text in templates:
                 if kind in reply_kinds:
                     texts.append(text)
     texts.extend(eliza_rules.NONE)
-    texts.extend(t for _p, t in eliza_rules.MEMORY)
+    texts.extend(t for _p, _m, t in eliza_rules.MEMORY)
     texts.append(eliza_rules.GREETING)
 
     longest = ""
@@ -505,7 +505,7 @@ def test_the_reply_renders():
     reply_kinds = set(eliza_rules.SPOTTABLE) | {eliza_rules.PHRASE}
     for _rank, _sub, decomps in eliza_rules.RULES.values():
         for _pattern, templates in decomps:
-            for kind, text in templates:
+            for kind, _mood, text in templates:
                 if kind not in reply_kinds:
                     continue
                 filled = eliza.sentence_case(re.sub(r"\b\d\b", echo, text))

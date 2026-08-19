@@ -300,6 +300,27 @@ print()
 
 scores = array("f", (0.0 for _ in range(N_CLASSES)))
 tm_scores = array("f", (0.0 for _ in range(N_CLASSES)))
+
+# TinyMaix needs its input as `array('B')` and rejects a plain `bytes` with
+# `TypeError: object with buffer protocol required` -- emlearn sniffs a
+# typecode that `mp_get_buffer` does not report for one. TFLM takes the raw
+# `bytes` happily, which is why only one of the two runtimes fell over when
+# this file passed the same object to both.
+#
+# **That defect is documented three times in this repository -- in this file's
+# own header, in si_spot.py, and in docs/cnn-on-device.md -- and this file
+# still walked into it**, because the host cannot exercise the TinyMaix path
+# and so nothing here had ever run. It cost a bench run. The stub in
+# tools/test_tflm_probe_tinymaix.py exists so it cannot cost a second one.
+#
+# One buffer, allocated once and copied into, rather than `array("B", patch)`
+# per case: 30 allocations of 2080 B would not have hurt anything, but
+# allocate-once is this project's rule and the copy is ~2 ms a case.
+_n_in = 1
+for _dim in model.input_dimensions():
+    _n_in *= _dim
+tm_input = array("B", (0 for _ in range(_n_in))) if tinymaix is not None else None
+
 errors = 0
 tflm_total = 0
 tflm_n = 0
@@ -325,10 +346,15 @@ for case_set, name, frames, clipped in manifest:
                          frames, clipped, micros))
 
         if tinymaix is not None:
-            tinymaix.run(patch, tm_scores)
+            if len(patch) != _n_in:
+                raise ValueError("case is %d bytes, model wants %d"
+                                 % (len(patch), _n_in))
+            for i in range(_n_in):
+                tm_input[i] = patch[i]
+            tinymaix.run(tm_input, tm_scores)
             t0 = time.ticks_us()
             for _ in range(REPEATS):
-                tinymaix.run(patch, tm_scores)
+                tinymaix.run(tm_input, tm_scores)
             tm_micros = time.ticks_diff(time.ticks_us(), t0) // REPEATS
             tm_total += tm_micros
             tm_n += 1

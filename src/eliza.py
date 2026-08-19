@@ -177,6 +177,22 @@ def _match(pattern, pi, words, wi, captured, tags):
     return None
 
 
+# Terminal marks a template token may carry. Templates are punctuated now
+# ("YOUR 3?"), so a bare `word.isdigit()` no longer finds a slot -- it silently
+# finds nothing, and the reply renders without the word it existed to say. That
+# caught fill(), _plant() and two tests in turn, so the rule lives here.
+_MARKS = "?.!,"
+
+
+def slot_of(word):
+    """The slot index a template token refers to, or None.
+
+    Tolerates the terminal punctuation a reply now carries.
+    """
+    bare = word.rstrip(_MARKS)
+    return int(bare) if bare.isdigit() else None
+
+
 def fill(template, captured):
     """Substitute a reassembly's digit slots with the captured components.
 
@@ -193,17 +209,29 @@ def fill(template, captured):
     """
     out = []
     for word in template.split():
-        if word.isdigit():
-            index = int(word)
+        # A slot can carry the reply's terminal punctuation -- "YOUR 4?" -- so
+        # the mark is set aside, the slot filled, and the mark put back. Without
+        # this the token is not a bare digit and the slot silently vanishes.
+        mark = ""
+        while word[-1:] in _MARKS:
+            mark = word[-1] + mark
+            word = word[:-1]
+
+        index = slot_of(word)
+        if index is not None:
+            piece = ""
             if 1 <= index <= len(captured):
                 component = captured[index - 1]
                 if len(component) > 1 and component[-1] == "I":
                     component = component[:-1] + ["ME"]
                 piece = " ".join(component)
-                if piece:
-                    out.append(piece)
+            if piece:
+                out.append(piece + mark)
+            elif mark and out:
+                # An empty slot must not take the punctuation with it.
+                out[-1] += mark
             continue
-        out.append(word)
+        out.append(word + mark)
     return " ".join(out)
 
 
@@ -542,7 +570,7 @@ class Doctor:
     def _usable(self, templates, spotted, captured):
         """Templates this input can actually fill, in script order."""
         out = []
-        for kind, payload in templates:
+        for kind, _mood, payload in templates:
             if kind in (self.rules.GOTO, self.rules.NEWKEY, self.rules.PRE):
                 out.append((kind, payload))
                 continue
@@ -564,11 +592,17 @@ class Doctor:
         return out
 
     def _plant(self, template, captured, noun):
-        """Put `noun` into every empty slot of a NOUN template."""
+        """Put `noun` into every empty slot of a NOUN template.
+
+        Strips terminal punctuation before testing for a slot, for the same
+        reason fill() does: a template now ends "YOUR 3?", and a bare isdigit()
+        test misses the slot, plants nothing, and renders "YOUR?" with the one
+        word the reply existed to say quietly gone.
+        """
         filled = list(captured)
         for word in template.split():
-            if word.isdigit():
-                index = int(word)
+            index = slot_of(word)
+            if index is not None:
                 if 1 <= index <= len(filled) and not filled[index - 1]:
                     filled[index - 1] = [noun]
         return fill(template, filled)
@@ -588,7 +622,7 @@ class Doctor:
         """
         if self.rules.MEMORY_KEYWORD not in words:
             return
-        for pattern, template in self.rules.MEMORY:
+        for pattern, _mood, template in self.rules.MEMORY:
             captured = match(pattern, swapped, self.rules.TAGS)
             if captured is not None:
                 self._memory.append(fill(template, captured))
