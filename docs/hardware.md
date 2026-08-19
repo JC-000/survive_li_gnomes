@@ -166,6 +166,34 @@ recordings were rejected** before the settle wait was added.
 
 Time the wait from the *start* of playback, not from the DMA finishing.
 
+### Streaming: the TX FIFO is the whole gap budget, and it is 500 µs
+
+Playing a clip longer than the buffer means re-arming the DMA mid-clip. The
+question that decides whether that clicks is how long the PIO can go without a
+word, and the answer is the FIFO: `audio_pio_out` declares
+`fifo_join=rp2.PIO.JOIN_TX`, so **8 words**, which at 16 kHz is **500 µs**.
+Past that the state machine stalls at its `pull()` and DOUT holds its last
+level — a tick, at every boundary.
+
+*Measured* on this board, streaming a real clip through `listen.speak()`:
+
+| | |
+| --- | --- |
+| DMA re-arm gap | **229–233 µs** (an upper bound — timed from when the poll *noticed* the finish) |
+| FIFO cover at 16 kHz | ~500 µs |
+
+Two things it depends on, both easy to undo by accident:
+
+- **Do not call `_restart_tx()` per chunk.** `StateMachine.restart()` is
+  `pio_sm_restart` *plus* a jmp to the initial PC (`ports/rp2/rp2_pio.c:796`),
+  and `audio_pio_out` opens with a `pull()` whose word is discarded before the
+  `start` label. So a restart per chunk drops one sample at every boundary and
+  throws away the FIFO contents that are covering the gap. Restart the first
+  run only, to sync to an LRCLK frame; after that write the read address and
+  the count and trigger.
+- **Poll tightly.** `while not play_finished(): pass`. A `sleep_ms(1)` there is
+  twice the entire budget.
+
 ### Microphone
 
 Same codec, `DIN` on **GP2**. Bring up with `mclk_pio_init()` +

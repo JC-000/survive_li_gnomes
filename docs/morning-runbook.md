@@ -394,7 +394,16 @@ failing to reach the device. The board is fine and nothing will tell you so:
 lsof /dev/cu.usbmodem1401
 ```
 
-Kill whatever it names, then retry. On the morning this was written the board
+Kill whatever it names, then retry.
+
+**The commonest thing it names is one of ours.** `uvx --from pyserial python -`
+fed by a heredoc *orphans* under this shell: the parent returns, the child is
+reparented to PID 1, and it sits forever reading a stdin that will never
+arrive — holding the tty the whole time. It happened three times on
+2026-08-19. `ps -o ppid= -p <pid>` returning `1` for a `python -` is the
+signature, and such a process cannot make progress, so killing it costs
+nothing. Write the script to a file and `python thatfile.py` instead; the
+scratchpad is the place for it. On the morning this was written the board
 answered `alive` immediately afterwards **with no reset at all** — which is the
 proof it had never hung, since a hung program would still have been hung.
 

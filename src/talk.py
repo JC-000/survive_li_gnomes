@@ -585,6 +585,15 @@ def reserve():
     the kind of thing a later tidy-up reorders innocently, so a comment saying
     "not stylistic" is weaker than a test that fails.
 
+    The module-level RECORDER, ARENA and MODEL_BLOB up top are part of the
+    same discipline, plus one lifetime rule: they stay module-level ON
+    PURPOSE. Each is a buffer the running program keeps pointers into (TFLM
+    plans into ARENA; the DMA reads RECORDER.buf), so if any of them is ever
+    moved inside a function and allowed to fall out of scope, the GC frees
+    memory the hardware or the native module is still using -- a slow,
+    baffling corruption rather than an error. template_buf below survives via
+    main() holding the name; the module-level three survive by construction.
+
     Both return values must be held for the life of the program. `template_buf`
     especially: it is the only strong reference to 137 KB that the spotter reads
     through, `templates.load()` keeps none, and main() never returning is what

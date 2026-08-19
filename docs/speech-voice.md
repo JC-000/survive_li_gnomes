@@ -460,18 +460,28 @@ stale and the correct split is 12 LITERAL + 16 NOUN = 28.
 
 ## Still open
 
-- **Nothing has been played through the board's speaker.** Per `CLAUDE.md`, a
-  codec that ignored a register write looks exactly like one that accepted it.
-  The 8 kHz reconfiguration in particular is *unknown* and must be confirmed
-  electrically, not by absence of an exception.
+- ~~**Nothing has been played through the board's speaker.**~~ Partly settled.
+  A 16 kHz pak clip has now been streamed through the codec on the board and
+  the DMA ran to the end across three boundaries — but *that is not the same
+  claim*, and per `CLAUDE.md` the difference is the whole point: a codec that
+  ignored a register write looks exactly like one that accepted it, and every
+  automated check passes on a board with the speaker disconnected. **The ear
+  verdict on clip quality is still outstanding.**
+
+  The **8 kHz** reconfiguration remains *unknown* and is now also unwanted: the
+  pak path never re-clocks, and the only code that still does is
+  `listen._speak_pcmw`, kept alive for the six stopgap clips and marked
+  do-not-extend.
 - **The seam verdict needs a human.** The measurement is unambiguous about the
   size of the discontinuity and says nothing about whether it matters.
 - **Apparent age was not measured and cannot be.** The Noelle exclusion is the
   only datapoint; the F0 ordering is a guess at a proxy.
-- **IMA ADPCM decode cost on this chip is *unknown*.** The sizing above assumes
-  4-bit ADPCM throughout, which needs a `@micropython.viper` decoder fast enough
-  to keep the codec fed. `speech-design.md` flags viper throughput on this chip
-  as unmeasured, and this depends on the same missing number.
+- ~~**IMA ADPCM decode cost on this chip is *unknown*.**~~ **Measured**, on the
+  board, 2026-08-19: `src/adpcm.py`'s viper decoder runs at **714,796
+  samples/s**, 44.7x the 16 kHz it has to keep up with. It was never going to
+  be close, and the number is here so nobody has to re-derive that. The
+  throughput that *does* bind the design is the DMA re-arm gap; see the
+  streaming section below.
 - **Whether a seam can be avoided by carrier-sentence rendering is *unknown*.**
   Rendering the stem inside a full sentence and cutting the noun out would give
   it a non-final contour, which is the actual fix. It needs a cut at a precise
@@ -510,11 +520,42 @@ The job, and where each part stands:
    rise for free anyway, because they are two words long and the `[[slnc]]`
    phrasing rule needs two words either side of the break to fire.
 
-2. **Stream from flash instead of load-whole-clip.** Still required, and the
-   correction above does not change that: the longest clip is
-   "Don't you believe that dream has something to do with your problem?" at
-   **4.48 s**, and the 96 KB shared buffer holds 1.54 s of 16 kHz packed
-   stereo words. Three times over, not marginal. *(measured)*
+2. **Stream from flash instead of load-whole-clip.** **Done**, and it was
+   required: the longest clip is "Don't you believe that dream has something to
+   do with your problem?" at **4.48 s**, and the 96 KB shared buffer holds
+   1.54 s of 16 kHz packed stereo words. Three times over, not marginal.
+   *(measured)*
+
+   `listen.speak()` ping-pongs the two halves of the existing capture buffer --
+   12000 words, **750 ms**, each -- decoding the next chunk into one while the
+   DMA drains the other. No new buffer: the only allocation the voice adds is
+   ~6 KB of nibble scratch, taken at boot in `talk.reserve()` rather than at the
+   first reply.
+
+   **The risk was never the refill and the measurement says so.** Decoding a
+   half costs **16 ms** against 750 ms to drain it (`@micropython.viper`,
+   714,796 samples/s = 44.7x real time, *measured on the board*). The risk is
+   the gap between DMA runs: when a half finishes, the PIO's TX FIFO holds
+   8 words -- **500 us** at 16 kHz -- and past that the state machine stalls at
+   its `pull()`, DOUT holds its last level, and there is a tick at every
+   boundary, about once a second, unmissable and unlocatable.
+
+   Measured **229-233 us**, so it fits, and that figure is an *upper* bound: it
+   is timed from when the poll noticed the DMA finish, not from the finish. But
+   the margin is ~2x, not ~20x, and it rests on the re-arm being a tight spin
+   with two register writes. Two things buy it, both deliberate:
+
+   - the first chunk restarts the TX state machine and every later one does
+     **not**. `_restart_tx()` does `pio_sm_restart` *plus* a jmp to the initial
+     PC (checked in the vendored `ports/rp2/rp2_pio.c`, not assumed), and
+     `audio_pio_out` opens with a `pull()` whose word is discarded before the
+     `start` label -- so a restart per chunk would drop a sample at every
+     boundary *and* throw away the FIFO contents that are covering the gap;
+   - `while not play_finished(): pass`, with no `sleep_ms`. One millisecond of
+     politeness there is twice the whole budget.
+
+   No second DMA channel and no pre-arm were needed, so neither was built. If
+   the ear ever hears a tick despite the number, that is the next step.
 
 3. **Storage.** Settled, and the premise was wrong twice over: the corpus is
    113 clips rather than 379, and the "~57 MB packed" figure counted the 4x
@@ -534,10 +575,18 @@ The job, and where each part stands:
    audition of the pre-encode render would be an audition of something the
    device never plays. The same clip and id are in the full pak.
 
-   **Nothing here has been played through the board's speaker.** Per CLAUDE.md
-   that gap is the one that shipped a bug before: `say` exiting 0 proves a file
-   was written and nothing about what a person hears, exactly as an unpowered
-   panel accepts SPI writes.
+   **This clip has now been played on the board** — `ff7a366a`, three times,
+   at volume 82, streaming off the pak, 3 boundaries crossed and the DMA to
+   the end each time. What that establishes is that the path runs; it does
+   **not** establish what a person hears, and per CLAUDE.md that distinction is
+   the one that shipped a bug before. `say` exiting 0 proves a file was
+   written, and `speak()` returning True proves the DMA drained, exactly as an
+   unpowered panel accepts SPI writes.
+
+   **The ear verdict is the open item.** What to listen for, in order: a tick
+   at the ~0.75 s boundaries (the one failure the streaming design can have);
+   buzz on loud syllables (volume 82 still too high at peak 15162); wrong pitch
+   or speed (a clock problem, not a decoder one).
 
 The container is `voice.pak` -- one file, one upload, seekable, bisected on
 flash without ever being held in RAM. Its layout is normative in
