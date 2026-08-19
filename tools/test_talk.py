@@ -439,6 +439,9 @@ def test_allocation_order():
                 return True
 
         talk.listen.Recorder = Recorder
+        talk.RECORDER = None   # force reserve() onto the stub: the real
+                               # reservation happens at import, pre-heavy-
+                               # imports, and this test exercises the fallback
         talk.templates = types.SimpleNamespace(
             PACKED="full", BUFFER_BYTES=64, TOTAL_FRAMES=2, INDEX=(),
             load=lambda buf=None, expand=None: order.append("templates") or buf)

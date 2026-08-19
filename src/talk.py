@@ -35,6 +35,23 @@ import time
 import board
 import epaper
 import listen
+
+# The big buffers are carved out HERE -- after the three light imports they
+# need, before every heavy one -- because placement decides everything on a
+# heap that never compacts. Measured on this image: the heap is 488 KB
+# contiguous at this point, 249 KB after the imports below, and a single
+# 19 KB buffer allocated post-import bisected what remained to 82 KB, which
+# is how four different reserve()-time orderings all starved something
+# (chirp, then the arena, then the capture buffer itself). Reserving first
+# puts the capture buffer and the tone at the heap's floor, where the import
+# churn cannot fragment around them. Defensive: a board where this fails
+# still boots and says why.
+try:
+    RECORDER = listen.Recorder()   # builds the chirp, then the 96 KB capture
+except Exception as _exc:          # noqa: BLE001
+    print("early reservation failed (%s); capture will be degraded" % _exc)
+    RECORDER = None
+
 import screen
 import vad
 
@@ -512,7 +529,10 @@ def reserve():
     """
     global _si
 
-    recorder = listen.Recorder()                # 94 KB, but 188 KB to build
+    # Constructed at module top, pre-imports -- see the note there. The
+    # fallback construction is for hosts and tests that stub listen after
+    # importing this module.
+    recorder = RECORDER if RECORDER is not None else listen.Recorder()
 
     # The CNN before the templates. Measured: the model costs 43 KB at rest and
     # peaks at 64 KB while the caller's array('B') of the file is still alive,

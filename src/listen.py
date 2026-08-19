@@ -158,6 +158,14 @@ class Recorder:
             max_samples = rate * MAX_RECORD_MS // 1000
         # Allocated up front and reused for every utterance: see the module
         # docstring on why this must not be a per-press allocation.
+        # The activation tone goes FIRST, on the pristine heap -- 19 KB before
+        # anything fragments. Three orderings have now been tried live:
+        # press-time (starved once the arena was resident), after-capture
+        # (starved the arena), and last-of-the-reservations (nothing left).
+        # First is the one that cannot be squeezed out, and at 19 KB it costs
+        # the later, larger allocations nothing they cannot spare. Empirical,
+        # not modelled: the models lost three times.
+        self._chirp = _build_chirp(rate)
         self.buf = allocate_samples(max_samples)
         self.max_samples = max_samples
 
@@ -177,7 +185,6 @@ class Recorder:
         # boot-time reservations, so it goes last: talk.reserve() calls
         # prepare_chirp() after the capture buffer, the spotter arena and the
         # templates. Order by size, largest first; the smallest thing yields.
-        self._chirp = None
         self._started_us = 0
         self._recording = False
         self._final_count = 0
