@@ -23,13 +23,16 @@ to *Rollback*.
 1. The image boots and the filesystem is intact.
 2. `import tflm` returns a module.
 3. `tools/test_tflm_module.py` — the binding behaves.
-4. The 30 cases reproduce byte for byte — **the whole reason for the exercise**.
-5. Inference timing, against TinyMaix's 66.6 ms.
+4. `tools/tflm_probe.py` + `check_tflm_device.py` — the 30 cases reproduce byte
+   for byte. **The whole reason for the exercise.**
+5. Inference timing, against TinyMaix's 66.6 ms — falls out of step 4.
 6. The `si_spot` A/B, if fw-tflm has the swap path ready.
 
 Steps 1–3 are mechanical. Step 4 is the one worth the bench session: TinyMaix
-changes top-1 on 3 of 8 patches, TFLM does not, and that claim is only proved on
-the host so far.
+changes top-1 on 3 of 8 patches, TFLM does not, and that claim has so far only
+been proved on the host and against a unix-port MicroPython standing in for the
+board. A pass there makes every host figure measured under reference kernels a
+device figure, which is why there is no separate accuracy run in this list.
 
 ---
 
@@ -46,7 +49,7 @@ Confirm the images are the ones this document means:
 
 | file | sha256 |
 | --- | --- |
-| `firmware/WAVESHARE_RP2350_TOUCH_EPAPER_154-v1.28.0-16MB-tflm.uf2` | `facdd8c5d1133407cf7f179d42b601aa6ae9a4ccb912b04b88e046ffcdaddd8b` |
+| `firmware/WAVESHARE_RP2350_TOUCH_EPAPER_154-v1.28.0-16MB-tflm.uf2` | `e7b1069af4eba02b1aadcf8a115f26f4b1b1d36e25eec6d8ddbd51d99cafe63c` |
 | `firmware/WAVESHARE_RP2350_TOUCH_EPAPER_154-v1.28.0-16MB.uf2` | `aeea05f47a60af1f3de75fd4649aaf53930905559ec808f5a0efdf849d40417e` |
 | `firmware/RPI_PICO2-20260406-v1.28.0.uf2` | `e65ad62ae886a4f56da8ef2c07904fe504b92de69e5ae6489acf881bcf30b6ae` |
 
@@ -199,79 +202,83 @@ TFLM decision rests on. `tools/tflm_vs_tflite.py` has already shown host TFLM
 equals host *reference* TFLite on these 30 cases; this shows the board computes
 the same bytes as the host, which closes the chain from training to glass.
 
-The cases are eight `kw_unknown_*` patches — the ones where TinyMaix changes
-top-1 on 3 of 8 — plus 22 real takes from `takes/` and `takes-oov/`, featurised
-by the same `tools/si_features.py` the board's front end uses. They are already
-built at `build/tflm-cases-int8/` (30 files, 62,400 bytes). Rebuild them only if the
-model changed:
+The cases are eight `kw_unknown_*` patches — the ones `docs/cnn-on-device.md`
+records TinyMaix disagreeing on — plus all 22 takes from `takes/` (10) and
+`takes-oov/` (12), none dropped by the endpointer. They are staged as tensors
+rather than WAVs on purpose: if the board featurised the audio itself, a byte
+difference would have two possible causes, and this step is about the model.
+The front end is proved separately, by `tools/test_si_patch.py` and by
+`speech_probe` section (h) on this very firmware.
+
+#### Run this one
+
+fw-tflm's chain, verified end to end against a unix-port MicroPython carrying
+the usermod — 30 cases, 30/30 bit-identical, exit 0. It runs **TinyMaix beside
+TFLM on the same inputs**, so the 3-of-8 claim gets made on the board rather
+than quoted at the bench from a host result.
 
 ```sh
-.venv/bin/python tools/tflm_cases.py
+./tools/make_tflm_cases.py                    # only if the model changed
+uvx mpremote connect $PORT cp build/tflm-cases/si_model.tflite :
+uvx mpremote connect $PORT cp -r build/tflm-cases/cases :
+uvx mpremote connect $PORT cp build/tflm-cases/manifest.txt :cases/
+uvx mpremote connect $PORT run tools/tflm_probe.py | tee /tmp/device.txt
+./tools/check_tflm_device.py /tmp/device.txt
 ```
 
-Copy the model and the cases over — about 62 KB, a few seconds on a 15 MB
-filesystem:
+**Read the exit status, not the prose.** Zero means every case matched on all
+22 integers, with no case missing and no `PROBE-ERROR` line. Nobody should be
+reading two columns of 22 integers at a bench.
+
+#### The second opinion, if there is time
+
+A second chain exists, written the same night, independently, from the same
+model. It stages into `build/tflm-cases-int8/` and does not disturb the files
+above.
 
 ```sh
+.venv/bin/python tools/tflm_cases.py          # only if the model changed
 uvx mpremote connect $PORT cp build/si_real.tflite :si_real.tflite
 uvx mpremote connect $PORT mkdir :cases
 for f in build/tflm-cases-int8/*.i8; do
     uvx mpremote connect $PORT cp "$f" ":cases/$(basename $f)"
 done
-```
-
-Run it, keeping the output, and diff:
-
-```sh
-uvx mpremote connect $PORT run tools/tflm_device_cases.py | tee /tmp/device.txt
+uvx mpremote connect $PORT run tools/tflm_device_cases.py | tee /tmp/device-i8.txt
 .venv/bin/python tools/tflm_compare_cases.py \
-    build/tflm-cases-int8/reference.txt /tmp/device.txt --expect 30
+    build/tflm-cases-int8/reference.txt /tmp/device-i8.txt --expect 30
 ```
 
-**Read the exit status, not the prose**: 0 only when all 30 match byte for byte,
-2 otherwise. `--expect 30` makes a run that dies at case 19 a failure rather
-than a pass over the cases that survived.
+Same rule: exit 0 or it did not pass. `--expect 30` makes a run that dies at
+case 19 a failure rather than a pass over the cases that survived. A `DIFFER`
+line names the class index and the difference in counts — one class off by one
+count is a rounding path, many classes far apart is a different model, a
+different input, or a broken kernel.
 
-A `DIFFER` line names the class index and the difference in counts. One class
-off by one count is a rounding path; many classes far apart is a different
-model, a different input, or a broken kernel — check the `# model` line in the
-device dump against `model_sha256` in the reference before assuming arithmetic.
+**The two host dumps were cross-checked on 2026-08-18 and agree on all 30
+cases, all 660 integers.** Two implementations, different transport
+conventions, same numbers — so the host reference does not rest on one
+person's featurisation call. If the two chains ever disagree *at the bench*,
+that disagreement is itself the finding and neither result should be reported
+until it is understood.
 
-**There are two chains for this step, written the same night.** fw-tflm built
-`tools/make_tflm_cases.py` + `tools/tflm_probe.py` + `tools/check_tflm_device.py`
-(uint8 transport, si-model's `SCORE` line format, and it runs **TinyMaix beside
-TFLM on the same inputs**, which substantiates the 3-of-8 claim on the device
-rather than only on the host). The commands above are the other one. They stage
-into separate directories -- `build/tflm-cases/` is theirs, `build/tflm-cases-int8/`
-is this one -- so either can be run without disturbing the other.
+#### What a pass means, and what it does not
 
-Their two host dumps were cross-checked on 2026-08-18 and **agree on all 30
-cases, all 660 integers**, having been written independently from the same
-model. Run either at the bench; if there is time, run both, because agreement
-between two implementations is worth more than either alone. If only one is run,
-theirs carries the TinyMaix comparison and is the better use of the window.
+A pass makes every host number measured under **reference kernels** a device
+number, by construction. There is no separate accuracy run to schedule.
 
-Two things worth knowing before reading a result:
-
-- **The comparison is on the raw int8 output tensor.** The device's binding
-  returns float32 scores, and the driver recovers the int8 from them. That is
-  exact rather than approximate: this model's output scale is 2^-8 with zero
-  point -128, so every score is (q + 128)/256, all 256 of which are exactly
-  representable in float32. `tflm_cases.py` refuses to write a dump if the
-  model's quantisation ever stops matching, and the comparator re-proves the
-  round trip over all 256 values on every run.
-- **The whole chain was exercised on the host on 2026-08-18** by
-  `tools/test_tflm_cases.py`, which runs the same device script against the host
-  library and checks that the gate *fails* when a single count is flipped and
-  when two cases go missing. A gate that cannot fail is worse than no gate, so
-  that control exists. What it cannot test is the RP2350: same source, different
-  compiler, different target. That is this step.
+That matters this morning because the recorded operating point moved, and not
+because of anything TFLM did. fw-tflm's measurement: the `.tflite` figures on
+record (threshold 0.598, precision 1.000 at recall 0.500) were taken through
+XNNPACK; under the reference kernels TFLM computes, the same takes and the same
+scorer give **0.637 at recall 0.300**. Top-1 is 0.700 under all three host
+runtimes, so the model did not change — what changed is where a threshold can
+sit. It is si-model's number to own; see `docs/tflm-usermod.md`, *What the
+morning confirms*.
 
 ### 4d. Inference time
 
-**Already measured by 4c** — `tflm_device_cases.py` times every invoke and
-prints `# time <case> <ms>` per case and a mean at the end, so this step is
-reading numbers you already have rather than a separate run.
+**Already measured by 4c** — both probes time every invoke, so this step is
+reading numbers already in the capture rather than a separate run.
 
 The figure to beat is TinyMaix's **66.6 ms** for `si_real` (docs/cnn-on-device.md).
 TFLM's reference kernels are not the optimised CMSIS-NN ones — that was a
@@ -331,6 +338,13 @@ the top:
 ```sh
 uvx mpremote connect $PORT soft-reset
 ```
+
+On a connection you are already holding — a `mpremote repl` session, or a
+terminal that was interrupted mid-run — the same thing by hand is **CTRL-B**
+(leave raw REPL for the friendly one) then **CTRL-D** (soft reboot). Worth
+knowing because that is the case where there is no separate shell to run the
+command above from. `tools/tflm_probe.py` prints this reminder when it
+finishes, for exactly this reason.
 
 Then witness the boot rather than assuming it:
 
