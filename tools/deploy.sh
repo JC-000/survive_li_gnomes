@@ -37,7 +37,7 @@ TEMPLATE_BLOB="src/templates.bin"
 VOICE_PAK="${VOICE_PAK:-corpus-voice/voice.pak}"
 
 # The CNN spotter's two data files. `si_real` is the model that ships: it is the
-# one trained on the real-speaker corpus, and its classes are the family nouns
+# one trained on the synthetic-voice corpus-tts/, and its classes are the family nouns
 # (mother, father, wife) that ELIZA gets the most out of echoing. `si_am` covers
 # the emotional words instead and has never been converted to a .tmdl; if it
 # ever is, this is the one line to change.

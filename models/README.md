@@ -7,8 +7,18 @@ checkout is not a recogniser.
 ## `si_real.tmdl`
 
 The speaker-independent keyword CNN. 21120 bytes, **already `--pad`ded** (15776
-before; see below). Trained by `si-model` on the real-speaker corpus; converted
-with TinyMaix's `tflite2tmdl.py` at `out_deq = 1`.
+before; see below). Trained by `si-model` on `corpus-tts/`; converted with
+TinyMaix's `tflite2tmdl.py` at `out_deq = 1`.
+
+**Provenance: the training data is entirely synthetic.** `corpus-tts/` is
+16,030 utterances rendered by eight macOS `say` TTS voices through a channel
+model (`tools/si_corpus.py`); no human recording is in the training set, so
+these weights contain no one's voice. (An earlier revision of this file called
+it "the real-speaker corpus" -- that was the project's internal shorthand for
+the *realistic* corpus, the one with noise and a channel model, as opposed to
+the noise-free dry-run corpus. Human takes were used only as a local,
+uncommitted evaluation set.) Retraining on your own corpus is fully
+reproducible: see `tools/si_train.py`'s docstring.
 
 | | |
 | --- | --- |
