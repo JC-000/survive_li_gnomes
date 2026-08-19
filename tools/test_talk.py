@@ -253,10 +253,26 @@ def test_every_spotted_word_is_known_to_the_engine():
 
     # Substitution runs before matching, so a word the engine rewrites must be
     # known under its rewritten form too.
+    #
+    # **This check is vacuous today, and that is stated rather than left for
+    # the green tick to imply.** `swapped` is empty: `eliza_rules.SUBS` keys are
+    # the informal forms a person types -- DAD, MOM, DREAMS, I'M, CANT -- and
+    # the vocabulary is spelled in the canonical forms those rewrite *to*, so
+    # nothing the spotter can emit is ever substituted. It is a guard against a
+    # change, not a measurement of today: add DAD or MOM as a spoken form, both
+    # of which are natural candidates, and this starts doing work.
+    #
+    # It was also broken until now -- the comparison named `accepted`, which is
+    # defined nowhere in this file, and only escaped because a comprehension
+    # over an empty list never evaluates its condition. A vacuous check and an
+    # undefined name hide each other perfectly: either alone is visible, and
+    # together they are a passing test. `tools/test_eliza.py`'s TestVocabContract
+    # guards its own inputs against exactly this for the same reason.
     swapped = [(w, eliza_rules.SUBS[w]) for w in
                (vocab.ECHO[l] for l in vocab.LABELS) if w in eliza_rules.SUBS]
-    bad = [(a, b) for a, b in swapped if b not in accepted]
-    check("substituted forms are also known (%d substituted)" % len(swapped),
+    bad = [(a, b) for a, b in swapped if b not in known]
+    check("substituted forms are also known (%d substituted%s)"
+          % (len(swapped), ", so this asserts nothing yet" if not swapped else ""),
           not bad, "lost in substitution: %s" % bad)
 
 

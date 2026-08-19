@@ -1,6 +1,6 @@
 """What the keyword spotter listens for, and what ELIZA does with each hit.
 
-Twenty-five spoken words in twenty-three classes. The budget is spent on
+Twenty-two spoken forms in twenty-one classes. The budget is spent on
 **echoable nouns** rather than on trigger words, because a reply that says the
 user's own word back -- "DO YOU OFTEN THINK OF MOTHER" -- is what makes the
 thing feel alive, while a trigger word can only ever unlock a canned line, and

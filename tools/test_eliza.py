@@ -428,7 +428,7 @@ class TestNounBeatsEmotion(unittest.TestCase):
 class TestVocabContract(unittest.TestCase):
     """src/vocab.py against the engine, which is a contract nothing else checks.
 
-    The device build spends twenty-three recogniser classes, each needing three
+    The device build spends twenty-one recogniser classes, each needing three
     recorded takes. A class that ELIZA has no answer for is that whole cost for
     a deflection -- and it fails silently, looking like blandness rather than an
     error. So every class earns its slot here or it should not be recorded.
