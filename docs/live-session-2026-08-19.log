@@ -1,0 +1,480 @@
+attached read-only
+ES8311 in Master mode and I2S format
+-> nothing heard (15 frames, noise floor 50177, start 200708)
+Initializing e-Paper...
+busy
+busy release
+busy
+busy release
+busy
+busy release
+busy
+busy release
+busy
+busy release
+Initializing e-Paper...
+busy
+busy release
+busy
+busy release
+   How do you do. Please tell me your problem [full, 3143 ms]
+   cnn: - (top mother p=0.352 margin=0.000)
+-> speech 8960..16000 (440 ms), heard -
+busy
+busy release
+   I am not sure I understand you fully [partial, 2852 ms]
+   cnn: - (top unknown p=0.605 margin=0.367)
+-> speech 6560..13440 (430 ms), heard -
+busy
+busy release
+   Please go on [partial, 2669 ms]
+   cnn: - (top unknown p=0.977 margin=0.973)
+-> speech 9920..17760 (490 ms), heard -
+Initializing e-Paper...
+busy
+busy release
+busy
+busy release
+busy
+busy release
+busy
+busy release
+busy
+busy release
+Initializing e-Paper...
+busy
+busy release
+busy
+busy release
+   What does that suggest to you [full, 4090 ms]
+re-attached after reset
+ES8311 in Master mode and I2S format
+cnn failed (MemoryError: memory allocation failed, allocating 57601 bytes)
+   dtw: - (best 536870912, runner-up 536870912)
+-> speech 10880..39680 (1800 ms), heard -
+Initializing e-Paper...
+busy
+busy release
+busy
+busy release
+busy
+busy release
+busy
+busy release
+busy
+busy release
+Initializing e-Paper...
+busy
+busy release
+busy
+busy release
+   I am not sure I understand you fully [full, 6040 ms]
+-> nothing heard (0 frames, noise floor 0, start 0)
+busy
+busy release
+   I did not hear anything. Hold the screen and speak. [partial, 1083 ms]
+   cnn: - (top unknown p=0.820 margin=0.727)
+-> speech 3520..10880 (460 ms), heard -
+busy
+busy release
+   Please go on [partial, 2484 ms]
+re-attached after second reset
+ES8311 in Master mode and I2S format
+   cnn: - (top unknown p=0.355 margin=0.051)
+-> speech 6080..13440 (460 ms), heard -
+Initializing e-Paper...
+busy
+busy release
+busy
+busy release
+busy
+busy release
+busy
+busy release
+busy
+busy release
+Initializing e-Paper...
+busy
+busy release
+busy
+busy release
+   I am not sure I understand you fully [full, 4594 ms]
+re-attached, diagnostic build
+re-attached, alloc-fix build
+tap up, watching for boot
+attached; sending soft reboot
+
+>>> 
+>>> 
+MPY: soft reboot
+Traceback (most recent call last):
+  File "main.py", line 604, in <module>
+  File "main.py", line 546, in main
+  File "main.py", line 524, in reserve
+  File "main.py", line 540, in si_patch_buffers
+  File "si_patch.py", line 104, in allocate
+MemoryError: memory allocation failed, allocating 58080 bytes
+MicroPython v1.28.0 on 2026-04-06; Raspberry Pi Pico2 with RP2350
+Type "help()" for more information.
+>>> 
+>>> 
+>>> 
+>>> 
+raw REPL; CTRL-B to exit
+>raw REPL; CTRL-B to exit
+>tap attached; soft reboot
+
+>>> 
+>>> 
+MPY: soft reboot
+cnn spotter ready (22 classes)
+eliza ready -- hold the screen or POWER, speak, let go
+ES8311 in Master mode and I2S format
+   cnn: mother (top mother p=0.418 margin=0.063, 49 frames, 0 clipped)
+-> speech 26880..35040 (510 ms), heard mother
+Initializing e-Paper...
+busy
+busy release
+busy
+busy release
+busy
+busy release
+busy
+busy release
+busy
+busy release
+Initializing e-Paper...
+busy
+busy release
+busy
+busy release
+   Tell me more about your family [full, 6376 ms]
+   cnn: father (top father p=0.773 margin=0.594, 41 frames, 0 clipped)
+-> speech 26400..33280 (430 ms), heard father
+Initializing e-Paper...
+busy
+busy release
+busy
+busy release
+busy
+busy release
+busy
+busy release
+busy
+busy release
+Initializing e-Paper...
+busy
+busy release
+busy
+busy release
+   Your father [full, 5004 ms]
+   cnn: sister (top sister p=0.969 margin=0.941, 53 frames, 0 clipped)
+-> speech 8320..17120 (550 ms), heard sister
+busy
+busy release
+   What else comes to mind when you think of your sister [partial, 2989 ms]
+   cnn: - (top unknown p=0.605 margin=0.305, 40 frames, 0 clipped)
+-> speech 9600..16320 (420 ms), heard -
+busy
+busy release
+   I am not sure I understand you fully [partial, 2822 ms]
+   cnn: wife (top wife p=0.523 margin=0.074, 42 frames, 0 clipped)
+-> speech 10400..17440 (440 ms), heard wife
+busy
+busy release
+   Tell me more about your family [partial, 2963 ms]
+   cnn: husband (top husband p=0.703 margin=0.418, 47 frames, 0 clipped)
+-> speech 14560..22400 (490 ms), heard husband
+busy
+busy release
+   Your husband [partial, 3261 ms]
+   cnn: children (top children p=0.547 margin=0.102, 48 frames, 0 clipped)
+-> speech 17920..25920 (500 ms), heard children
+busy
+busy release
+   What else comes to mind when you think of your children [partial, 3544 ms]
+   cnn: - (top unknown p=0.535 margin=0.113, 29 frames, 0 clipped)
+-> speech 16640..21600 (310 ms), heard -
+busy
+busy release
+   Please go on [partial, 3153 ms]
+   cnn: wife (top wife p=0.520 margin=0.074, 39 frames, 0 clipped)
+-> speech 19360..25920 (410 ms), heard wife
+busy
+busy release
+   Tell me more about your family [partial, 3445 ms]
+   cnn: - (top unknown p=0.805 margin=0.711, 48 frames, 0 clipped)
+-> speech 12320..20320 (500 ms), heard -
+busy
+busy release
+   What does that suggest to you [partial, 3126 ms]
+   cnn: work (top work p=0.641 margin=0.391, 23 frames, 0 clipped)
+-> speech 12160..16160 (250 ms), heard work
+Initializing e-Paper...
+busy
+busy release
+busy
+busy release
+busy
+busy release
+busy
+busy release
+busy
+busy release
+Initializing e-Paper...
+busy
+busy release
+busy
+busy release
+   Your work [full, 3833 ms]
+   cnn: wife (top wife p=0.809 margin=0.629, 38 frames, 0 clipped)
+-> speech 13920..20320 (400 ms), heard wife
+busy
+busy release
+   Your wife [partial, 3083 ms]
+   cnn: - (top unknown p=0.340 margin=0.020, 36 frames, 0 clipped)
+-> speech 16480..22560 (380 ms), heard -
+busy
+busy release
+   Do you feel strongly about discussing such things [partial, 3185 ms]
+   cnn: death (top death p=0.625 margin=0.313, 34 frames, 0 clipped)
+-> speech 13440..19200 (360 ms), heard death
+busy
+busy release
+   Why do you say your death [partial, 3035 ms]
+   cnn: wife (top wife p=0.543 margin=0.270, 38 frames, 0 clipped)
+-> speech 11040..17440 (400 ms), heard wife
+Initializing e-Paper...
+busy
+busy release
+busy
+busy release
+busy
+busy release
+busy
+busy release
+busy
+busy release
+Initializing e-Paper...
+busy
+busy release
+busy
+==== CLEAN RUN STARTS HERE Tue Aug 18 21:33:48 EDT 2026 ====
+busy release
+   What else comes to mind when you think of your wife [full, 4014 ms]
+   cnn: mother (top mother p=0.461 margin=0.027, 45 frames, 0 clipped)
+-> speech 10400..17920 (470 ms), heard mother
+Initializing e-Paper...
+busy
+busy release
+busy
+busy release
+busy
+busy release
+busy
+busy release
+busy
+busy release
+Initializing e-Paper...
+busy
+busy release
+busy
+busy release
+   Tell me more about your family [full, 4084 ms]
+   cnn: - (top father p=0.500 margin=0.000, 42 frames, 0 clipped)
+-> speech 15840..22880 (440 ms), heard -
+busy
+busy release
+   I am not sure I understand you fully [partial, 3253 ms]
+   cnn: sister (top sister p=0.836 margin=0.672, 61 frames, 0 clipped)
+-> speech 14400..24480 (630 ms), heard sister
+busy
+busy release
+   Your sister [partial, 3494 ms]
+   cnn: - (top unknown p=0.871 margin=0.820, 60 frames, 0 clipped)
+-> speech 12640..22560 (620 ms), heard -
+busy
+busy release
+   Please go on [partial, 3335 ms]
+   cnn: wife (top wife p=0.902 margin=0.813, 39 frames, 0 clipped)
+-> speech 12000..18560 (410 ms), heard wife
+busy
+busy release
+   What else comes to mind when you think of your wife [partial, 2977 ms]
+   cnn: - (top husband p=0.492 margin=0.000, 48 frames, 0 clipped)
+-> speech 11040..19040 (500 ms), heard -
+busy
+busy release
+   What does that suggest to you [partial, 3091 ms]
+   cnn: children (top children p=0.891 margin=0.785, 44 frames, 0 clipped)
+-> speech 11680..19040 (460 ms), heard children
+busy
+busy release
+   Tell me more about your family [partial, 3031 ms]
+   cnn: - (top unknown p=0.430 margin=0.047, 28 frames, 0 clipped)
+-> speech 10080..14880 (300 ms), heard -
+busy
+busy release
+   Do you feel strongly about discussing such things [partial, 2791 ms]
+   cnn: wife (top wife p=0.758 margin=0.609, 41 frames, 0 clipped)
+-> speech 12000..18880 (430 ms), heard wife
+busy
+busy release
+   Your wife [partial, 3023 ms]
+   cnn: - (top unknown p=0.539 margin=0.285, 36 frames, 0 clipped)
+-> speech 11040..17120 (380 ms), heard -
+Initializing e-Paper...
+busy
+busy release
+busy
+busy release
+busy
+busy release
+busy
+busy release
+busy
+busy release
+Initializing e-Paper...
+busy
+busy release
+busy
+busy release
+   I am not sure I understand you fully [full, 3976 ms]
+   cnn: death (top death p=0.898 margin=0.805, 27 frames, 0 clipped)
+-> speech 10400..15040 (290 ms), heard death
+busy
+busy release
+   Does that suggest anything else which belongs to you [partial, 2743 ms]
+   cnn: love (top love p=0.656 margin=0.348, 33 frames, 0 clipped)
+-> speech 27200..32800 (350 ms), heard love
+busy
+busy release
+   Your love [partial, 3820 ms]
+   cnn: - (top unknown p=0.957 margin=0.926, 40 frames, 0 clipped)
+-> speech 10880..17600 (420 ms), heard -
+busy
+busy release
+   Please go on [partial, 2920 ms]
+   cnn: happy (top happy p=0.883 margin=0.797, 37 frames, 0 clipped)
+-> speech 9120..15360 (390 ms), heard happy
+busy
+busy release
+   How have I helped you to be happy [partial, 2784 ms]
+   cnn: yes (top yes p=0.938 margin=0.879, 42 frames, 0 clipped)
+-> speech 10080..17120 (440 ms), heard yes
+busy
+busy release
+   You seem quite positive [partial, 2870 ms]
+   cnn: - (top dream p=0.492 margin=0.000, 50 frames, 0 clipped)
+-> speech 14400..22720 (520 ms), heard -
+busy
+busy release
+   What does that suggest to you [partial, 3326 ms]
+   cnn: children (top children p=0.441 margin=0.066, 67 frames, 0 clipped)
+-> speech 12000..23040 (690 ms), heard children
+busy
+busy release
+   What else comes to mind when you think of your children [partial, 3451 ms]
+   cnn: always (top always p=0.969 margin=0.938, 53 frames, 0 clipped)
+-> speech 11040..19840 (550 ms), heard always
+busy
+busy release
+   Can you think of a specific example [partial, 3111 ms]
+   cnn: sorry (top sorry p=0.492 margin=0.027, 49 frames, 0 clipped)
+-> speech 11680..19840 (510 ms), heard sorry
+Initializing e-Paper...
+busy
+busy release
+busy
+busy release
+busy
+busy release
+busy
+busy release
+busy
+busy release
+Initializing e-Paper...
+busy
+busy release
+busy
+busy release
+   Please don't apoligize [full, 4222 ms]
+   cnn: - (top unknown p=0.980 margin=0.965, 67 frames, 0 clipped)
+-> speech 8160..19200 (690 ms), heard -
+busy
+busy release
+   Do you feel strongly about discussing such things [partial, 3187 ms]
+   cnn: brother (top brother p=0.473 margin=0.051, 60 frames, 0 clipped)
+-> speech 9760..19680 (620 ms), heard brother
+busy
+busy release
+   Tell me more about your family [partial, 3205 ms]
+   cnn: - (top unknown p=0.867 margin=0.773, 67 frames, 0 clipped)
+-> speech 9120..20160 (690 ms), heard -
+busy
+busy release
+   I am not sure I understand you fully [partial, 3275 ms]
+   cnn: - (top unknown p=0.961 margin=0.945, 53 frames, 0 clipped)
+-> speech 9760..18560 (550 ms), heard -
+busy
+busy release
+   Please go on [partial, 3031 ms]
+   cnn: - (top unknown p=0.957 margin=0.926, 69 frames, 0 clipped)
+-> speech 9600..20960 (710 ms), heard -
+busy
+busy release
+   What does that suggest to you [partial, 3303 ms]
+   cnn: - (top unknown p=0.656 margin=0.375, 57 frames, 0 clipped)
+-> speech 11520..20960 (590 ms), heard -
+Initializing e-Paper...
+busy
+busy release
+busy
+busy release
+busy
+busy release
+busy
+busy release
+busy
+busy release
+Initializing e-Paper...
+busy
+busy release
+busy
+busy release
+   Do you feel strongly about discussing such things [full, 4370 ms]
+   cnn: - (top unknown p=0.840 margin=0.734, 59 frames, 0 clipped)
+-> speech 7840..17600 (610 ms), heard -
+busy
+busy release
+   I am not sure I understand you fully [partial, 3024 ms]
+   cnn: brother (top brother p=0.406 margin=0.020, 50 frames, 0 clipped)
+-> speech 6400..14720 (520 ms), heard brother
+busy
+busy release
+   Your brother [partial, 2746 ms]
+   cnn: - (top unknown p=0.828 margin=0.734, 57 frames, 0 clipped)
+-> speech 10560..20000 (590 ms), heard -
+busy
+busy release
+   Please go on [partial, 3149 ms]
+   cnn: - (top unknown p=0.742 margin=0.594, 47 frames, 0 clipped)
+-> speech 6880..14720 (490 ms), heard -
+busy
+busy release
+   What does that suggest to you [partial, 2781 ms]
+   cnn: sad (top sad p=0.809 margin=0.621, 43 frames, 0 clipped)
+-> speech 7840..15040 (450 ms), heard sad
+busy
+busy release
+   I am sorry to hear you are sad [partial, 2780 ms]
+   cnn: sleep (top sleep p=0.367 margin=0.066, 35 frames, 0 clipped)
+-> speech 12480..18400 (370 ms), heard sleep
+busy
+busy release
+   Why do you say your sleep [partial, 2963 ms]
+   cnn: work (top work p=0.809 margin=0.652, 29 frames, 0 clipped)
+-> speech 8800..13760 (310 ms), heard work
+busy
+busy release
+   Does that suggest anything else which belongs to you [partial, 2777 ms]

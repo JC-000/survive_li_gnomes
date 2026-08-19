@@ -103,11 +103,60 @@ the CNN evaluations.
 
 ### The next thing to do, and it is not architectural
 
-**More real speech, from a second speaker.** Every conclusion here rests on ten
-keywords and twelve negatives from one person in one room. Three takes per word
-plus thirty negatives would turn an indication into a measurement; a second
-speaker would turn it into a claim about people rather than about one person.
-No change to the model is worth as much.
+**Speakers nobody trained on.** Every conclusion here rests on ten keywords and
+twelve negatives from **one** person, who is also the person the thresholds were
+tuned against. For a workshop that is the wrong shape of evidence entirely: the
+question is not "does it recognise its owner" but "does it stay quiet around
+strangers".
+
+No change to the model is worth as much as five more voices, and collecting them
+needs nobody from this team.
+
+#### The protocol, for the user to run without us
+
+**Three minutes per person.** Ask a colleague, a housemate, anyone who has not
+been recorded yet. Different rooms and different microphone distances are a feature,
+not a problem to control away.
+
+```
+# keywords -- one take of each, in the vocabulary's own words
+uvx --from pyserial python tools/enrol.py speakers/<name>/ --reps 1
+
+# negatives -- the words that must NOT fire, in the same session
+uvx --from pyserial python tools/enrol.py speakers/<name>-oov/ --allow-any --reps 1 \
+    --words other,another,wonder,mothers,brothers,know,want,need,today,problem,friend,because
+```
+
+(`--allow-any` is what permits words outside `vocab.FORMS`; without it the tool
+refuses them, which is deliberate — it once stopped someone recording templates
+for a retired keyword.)
+
+Then, for each speaker:
+
+```
+.venv/bin/python tools/si_eval.py build/si_real.tflite corpus-tts/manifest.json \
+    --takes <a directory holding BOTH that speaker's sets>
+```
+
+Four things make the data usable rather than merely collected:
+
+1. **Keywords and negatives from the same person in the same session.** A
+   precision figure needs both; see [the real-speaker
+   result](#the-real-speaker-result) for what happens when only keywords are
+   scored.
+2. **One take each is enough at first.** Five speakers x 22 utterances beats one
+   speaker x 110, because the variance that matters is between people.
+3. **Check `peak` and `clipped` in the printed stats.** `MIC_GAIN = 1` should
+   give peaks well under 32768 and zero clipped samples. If it clips, the
+   recordings still endpoint but they carry a distortion the corpus does not
+   model.
+4. **Do not tune anything on a speaker until every speaker is collected.**
+   Thresholds tuned on the people you have are thresholds fitted to them.
+
+**What five speakers would settle:** whether precision 1.000 survives contact
+with voices the model has never seen and nobody tuned against — which is the
+entire question a workshop build asks, and the only one this document cannot
+currently answer.
 
 ## The finding: rejection, not recognition
 
@@ -141,6 +190,70 @@ verdicts.
 Note what that costs the usual way of reporting this: on a single accuracy
 figure these two systems are **indistinguishable**, and the whole difference
 lives in the axis that figure averages away.
+
+## The sweep, and what it says for a room of strangers
+
+`--unknown-weight` and `--width`, on the full 16030-utterance corpus (8 training
+voices, 4 of them American), evaluated three ways: held-out synthetic voices
+(**val**, accented only), unseen **American** synthetic voices (**test**), and
+the real speaker. Every figure from the int8 model.
+
+| config | val top-1 | test(US) top-1 | real top-1 | val P=1.00 R | test P=1.00 R | **real P=1.00 R** |
+| --- | --- | --- | --- | --- | --- | --- |
+| w1.0 unk0.5 | 0.880 | 0.856 | 0.700 | 0.000 | 0.000 | 0.200 |
+| **w1.0 unk1.0** *(shipped)* | 0.850 | 0.821 | **0.700** | 0.000 | 0.000 | **0.500** |
+| w1.0 unk2.0 | 0.779 | 0.757 | 0.500 | 0.051 | 0.000 | 0.500 |
+| w1.0 unk4.0 | 0.669 | 0.586 | 0.400 | 0.098 | 0.044 | 0.400 |
+| w1.5 unk0.5 | **0.890** | **0.864** | 0.600 | 0.000 | 0.000 | 0.400 |
+| w1.5 unk1.0 | 0.845 | 0.822 | 0.300 | 0.000 | 0.000 | 0.300 |
+| w1.5 unk2.0 | 0.807 | 0.778 | 0.400 | 0.073 | 0.000 | 0.300 |
+| w1.5 unk4.0 | 0.736 | 0.686 | 0.400 | 0.084 | 0.044 | 0.400 |
+
+**Four things, in order of how much they should change behaviour.**
+
+**1. `--unknown-weight` does exactly what the design wants, on synthetic data.**
+Raising it trades top-1 for precision monotonically — val top-1 falls 0.880 to
+0.669 while val precision-1.000 recall climbs 0.000 to 0.098, and test(US) from
+0.000 to 0.044. There is a real frontier and the knob moves along it. This is
+the first time it has been swept.
+
+**2. The shipped configuration is the right one, and now on evidence.**
+`w1.0 unk1.0` gives the best real-speaker operating point in the sweep — top-1
+0.700 at precision-1.000 recall 0.500 — and si-device chose it before this ran.
+
+**3. Do not select the model on synthetic accuracy.** `w1.5 unk0.5` is the best
+model in the table on *both* synthetic populations (0.890 val, 0.864 test) and
+is **worse on the real speaker** than the shipped one on the metric that
+matters. A selection rule of "highest synthetic accuracy" picks it and ships a
+worse device. Synthetic accuracy is a sanity check, not a selection criterion.
+
+**4. The real test set cannot separate these models, and that is the finding.**
+Real recall is measured over **ten keywords**: 0.500 against 0.300 is two
+utterances. Across the four unknown-weights, w1.0 beats w1.5 on real twice,
+loses once and ties once — which is noise, not a ranking. So the sweep can
+*rank the knob* on synthetic data and *cannot rank the models* on real data.
+The corpus is large enough to tune against; the human test set is not, and no
+amount of synthetic data fixes that.
+
+### What this means for a workshop
+
+**test(US) precision-1.000 recall is 0.000 for six of eight configurations.**
+Those are unseen American synthetic voices against a large adversarial negative
+population — the closest available proxy for strangers — and against thousands
+of attackers there is essentially no threshold at which the model never once
+fires wrongly.
+
+Read that carefully, because the real-speaker 0.500 sits beside it and they are
+not measuring the same thing: the real set has **12** negatives, the synthetic
+sets have **thousands**. A precision-1.000 point is far harder to reach against
+thousands. The synthetic number is the pessimistic bound and the real number is
+the optimistic one, and **the truth for a room of strangers is somewhere between
+them, with nothing currently measuring where.**
+
+That is the argument for [the protocol above](#the-protocol-for-the-user-to-run-without-us),
+stated numerically: five real speakers with twelve negatives each is ~60
+negatives, which starts to discriminate between an operating point that is
+genuinely clean and one that has met twelve easy words.
 
 ## Tuning against the wrong model
 
@@ -185,6 +298,76 @@ what an earlier model predicted, not what was said. Where the host said a
 keyword and the device said `unknown`, if the true label was `unknown` then the
 **device was the more accurate of the two**, and nothing available says which.
 What is measured is the direction of *disagreement*, not a direction of error.
+
+### Host TinyMaix: built, and it reproduces the device
+
+**This is done, and it is the thing that unblocks host-side tuning.** TinyMaix's
+stock `include/tm_port.h` already carries emlearn's exact configuration —
+`TM_ARCH_CPU`, `TM_OPT0`, `TM_MDL_TYPE = TM_MDL_INT8`, `TM_FASTSCALE 0`,
+`TM_MAX_KCSIZE 3*3*256` — so no porting was needed, only a shim:
+
+```
+clang -O2 -shared -fPIC -I TinyMaix/include \
+    TinyMaix/src/tm_model.c TinyMaix/src/tm_layers.c shim.c -o libtmhost.dylib
+```
+
+The shim mirrors `mod_cnn_run`: uint8 in, `TMPP_UINT2INT`, float out, driven
+from Python by `ctypes`.
+
+**One trap, and it fails the way everything in this project fails.** `tm_load`
+fills the input `tm_mat_t` with the model's own dims and the upstream example
+*reuses that same mat* as `tm_preprocess`'s output. Pass a fresh uninitialised
+one and the dims are garbage — which presents as a **constant output for every
+input**, not as noise. Same shape as the batch-norm bug: a plausible-looking
+number that is the same plausible-looking number every time.
+
+**It reproduces the device's decisions.** Against `si_real` and the eight
+patches si-device ran on the board:
+
+| | top-1 disagreements vs host TFLite | on which patches |
+| --- | --- | --- |
+| **device (si-device)** | 3 of 8 | 0, 6, 7 |
+| **host TinyMaix (this build)** | **3 of 8** | **0, 6, 7** |
+
+Same count, same patches, same predicted classes. Output probabilities land
+within 2 to 8 of the 256 quantisation levels of the device's — close but not
+bit-identical, and `-ffp-contract=off` does not close it, so the residue is
+likely genuine ARM-versus-host float rounding in the requantisation. **Tune on
+host TinyMaix; verify on the board any threshold sitting within ~0.03 of a
+decision boundary.**
+
+### What causes the divergence: two named things, and they are not all of it
+
+The line is `arch_cpu.h`:
+
+```c
+outp[i] = (mtype_t)(sumf*out_s_inv + out_zp);
+```
+
+A bare C cast. It **truncates toward zero** where TFLite rounds to nearest, and
+it **wraps** where TFLite saturates. The source even carries the rounding
+variant commented out beside it.
+
+Both were tested by building patched variants and measuring the divergence from
+TFLite over the eight patches:
+
+| variant | mean abs prob difference | max | top-1 agreement |
+| --- | --- | --- | --- |
+| stock | 0.01738 | 0.07013 | 5 / 8 |
+| + round to nearest | 0.01447 | 0.06925 | 5 / 8 |
+| + saturate to int8 | 0.01332 | 0.04936 | 5 / 8 |
+| **both** | **0.01021** | **0.04457** | **5 / 8** |
+
+**Neither is the whole story and fixing both does not help the decision.**
+Rounding accounts for about 17% of the divergence and saturation about 23%;
+together 41%, leaving the majority in the structural difference — TinyMaix
+requantises in float per output element, TFLite uses fixed-point multipliers
+with defined rounding. And **top-1 agreement does not move at all**: 5 of 8 in
+every variant.
+
+So patching TinyMaix is not a route to making TFLite-tuned thresholds valid on
+the device. The route is to tune against TinyMaix, which the host build now
+makes cheap.
 
 ### It is scatter, not a shift, and that is the real argument for the host build
 
@@ -910,8 +1093,43 @@ priority. The remainder, in order of value:
    at `MIC_GAIN = 1`, but a louder or closer speaker will, and the corpus has
    no example of saturation.
 
-**The decision rule, stated in advance and now settled:** the CNN had to beat
-the DTW control's precision-1.000 recall on real speech. It did — **0.500
-against 0.000**, at identical top-1 — so the speaker-independent path is worth
-pursuing, and "ship DTW with synthetic templates" is not a live option. Not
-because DTW recognises worse, but because it cannot decline to answer.
+## The decision, and what happened to DTW
+
+**The decision rule, stated in advance and settled:** the CNN had to beat the
+DTW control's precision-1.000 recall on real speech. It did — **0.500 against
+0.000**, at identical top-1 — so the speaker-independent path is not an
+experiment any more. **The CNN ships.**
+
+Not because DTW recognises worse. Because it cannot decline to answer.
+
+**DTW is parked, not deleted**, and the distinction matters:
+
+- `tools/mfcc.py` and `tools/dtw.py` remain the **ground truth for the front
+  end**. Every feature this project computes, the CNN's included, comes out of
+  `mfcc.py`, and `src/speech_fixtures.py` pins it bit-for-bit against the device
+  port. `test_spotter` still measures against them.
+- `tools/si_dtw_control.py` remains the **baseline any future model is measured
+  against**. A speaker-independent number with nothing to compare it to is not
+  a result.
+- Speaker-*dependent* DTW remains the **fallback** if the CNN fails on hardware
+  in a way that cannot be fixed. It is the only configuration in this project
+  measured to work at recall 0.966.
+
+What is dead is specifically **DTW with synthetically-enrolled templates**: four
+configurations, no usable operating point, on a real speaker.
+
+### The product changed, and it changes what to optimise
+
+This was scoped as "can the ball recognise its owner without enrolment". It is
+now a **workshop build**: many speakers, none of them known in advance, no
+enrolment for any of them. That inverts the evaluation. Every number in this
+document is for **one** speaker who happens to be the person who recorded the
+takes; a room full of strangers is a different and harder population, and
+nothing here measures it.
+
+The consequence for tuning is concrete. For one known speaker, recall is worth
+chasing. For a workshop, **precision against strangers is the thing that breaks
+a demo** — a device that misfires on overheard chatter is worse than one that is
+hard of hearing, because a deflection is in character and a wrong answer is not.
+That is the same argument `docs/speech-design.md` made for the original design,
+and a crowd sharpens it.

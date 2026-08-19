@@ -85,6 +85,24 @@ afterwards.
 the *host* and copies the result over -- but a plain `cp` of a file already on
 disk is one less thing to be wrong about at the bench.)
 
+## Every section swallows its own exceptions, and that has a cost
+
+Each section below is wrapped in a broad `except` so that one failing does not
+take the rest of the run with it. That is right -- a probe whose job is to find
+out whether something works must survive it not working -- but it has a price
+worth stating plainly:
+
+**a probe section with its own broad `except` converts probe bugs into
+plausible-looking hardware failures.** A typo, a deleted name, a wrong index
+inside a section is reported in exactly the format a genuine device fault is,
+and the reader has every reason to believe it. So everything in here has to be
+run before it is trusted, and run *twice* -- the second pass is what catches a
+name that only survived the first because something above it happened to still
+be bound.
+
+Both passes were run, on the host and on the board, after the section-4 helper
+below was changed to take arguments instead of closing over loop variables.
+
 ## Section 4 runs regardless
 
 If the import fails, that is a real finding and not a dead end: the fallback is
@@ -121,6 +139,8 @@ def biggest():
     while lo < hi:
         mid = (lo + hi + 1) // 2
         try:
+            # The allocation is the whole test; the binding just makes the
+            # intent legible and the `del` releases it before the next probe.
             buf = bytearray(mid)
             del buf
             lo = mid
@@ -555,6 +575,30 @@ try:
     print()
     print("  whole layers, 64x24x1 input (gather + MAC + requant):")
 
+    def _fill(src, wts, cfg, cho, n_terms, value, signed):
+        """Set both buffers to one uint8 value and fold the matching bias.
+
+        Takes its buffers as arguments rather than closing over them, which
+        matters more than it looks. The loop below ends each iteration with
+        `del src, dst, wts, cfg`, and a nested function that read those as
+        globals would keep working only because the next iteration rebinds them
+        before calling it -- true today, and quietly false the moment anyone
+        adds a call after the loop. A NameError there would be caught by this
+        section's own broad `except` and reported as a *hardware* failure.
+
+        The bias carries `-128 * sum(W)` over the *signed* weights, which is the
+        whole input-independent half of unwinding the +128 bias. Leaving it at
+        zero does not crash; it leaves every accumulator wrong, and wrong in the
+        direction that makes the bound look violated when it is not.
+        `tools/test_conv_int8.py` has the algebra, and found that bug here.
+        """
+        for i in range(len(src)):
+            src[i] = value
+        for i in range(len(wts)):
+            wts[i] = value
+        for ch in range(cho):
+            cfg[12 + ch] = -128 * (signed * n_terms)
+
     LAYERS = (
         # (in_h, in_w, chi, kh, kw, cho, stride_h, stride_w)
         (64, 24, 1, 3, 24, 16, 1, 1),
@@ -598,25 +642,9 @@ try:
             cfg[12 + cho + c] = 16383       # Q14 multiplier, at its maximum
             cfg[12 + 2 * cho + c] = 14
 
-        def fill(value, signed):
-            """Set both buffers to one uint8 value and fold the matching bias.
-
-            The bias carries `-128 * sum(W)` over the *signed* weights, which
-            is the whole input-independent half of unwinding the +128 bias.
-            Leaving it at zero does not crash; it leaves every accumulator
-            wrong, and wrong in the direction that makes the bound look
-            violated when it is not. tools/test_conv_int8.py has the algebra.
-            """
-            for i in range(len(src)):
-                src[i] = value
-            for i in range(len(wts)):
-                wts[i] = value
-            for ch in range(cho):
-                cfg[12 + ch] = -128 * (signed * n_terms)
-
         # Pass 1, timing: operands at full width, which is what a real layer
         # looks like to the multiplier.
-        fill(255, 127)
+        _fill(src, wts, cfg, cho, n_terms, 255, 127)
         t0 = time.ticks_us()
         _conv2d_u8(src, dst, wts, cfg)
         dt = time.ticks_diff(time.ticks_us(), t0)
@@ -631,7 +659,7 @@ try:
         # viper's int is a 32-bit machine word that wraps silently while
         # CPython's is unbounded -- so the host test proves the algebra and
         # this proves the port.
-        fill(0, -128)
+        _fill(src, wts, cfg, cho, n_terms, 0, -128)
         peak = _conv2d_u8(src, dst, wts, cfg)
 
         occupancy = 100.0 * peak * 16383 / 2147483648.0

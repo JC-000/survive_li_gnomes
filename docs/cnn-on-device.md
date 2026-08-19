@@ -19,8 +19,11 @@ model and the corpus; this file owns the runtime.
 > with a control; that `bytearray` is rejected as model input; and that the
 > device disagrees with host TFLite on 3 of 8 keyword patches.
 >
-> **Still analysis, not measured**: the operating point (threshold and margin)
-> under TinyMaix arithmetic; whether the divergence comes from the unclamped
+> **Updated 2026-08-18 (second session):** the CNN is now wired into `talk.py`
+> and a full turn has run on the glass. The operating point has been measured
+> through the device path. See *The recogniser that ships* below.
+>
+> **Still analysis, not measured**: whether the divergence comes from the unclamped
 > int8 outputs or from the requant rounding; the front end feeding the CNN on
 > the device; depthwise cost in the viper fallback; and every figure for the
 > `dscnn 2.0` / `plain` candidates, which were never built as `.tmdl` and are
@@ -492,6 +495,106 @@ Nothing about this has been measured. It is the largest open question after the
 import.
 
 
+## The recogniser that ships
+
+The CNN is `talk.py`'s recogniser. DTW is parked, not deleted: `spotter` is
+still deployed, is still the front end the CNN taps, and is still the
+specification the port is proved against -- `_spot_keyword` simply asks the CNN
+first and falls through to DTW only if the native module misbehaves. On the
+workshop build `templates.bin` is absent, so DTW has nothing to match and that
+fall-through returns None, which is the intended shape rather than a gap.
+
+### The path
+
+    capture -> vad.endpoints -> si_patch (tap spotter's mel, normalise, fit)
+            -> emlearn_cnn_int8 -> argmax + three gates -> vocab label -> ELIZA
+
+`src/si_patch.py` is the device half of `tools/si_features.py`. It calls
+`spotter._mfcc_at` whole and reads the 26 Q8 log2 mel values out of `work[3]`,
+so the arithmetic below the tap is the arithmetic the DTW path already uses and
+is already proved bit-exact against `src/speech_fixtures.py`. Its own additions
+-- per-band mean subtraction, the `>> 4` to int8, centre crop/pad, and the
+`+ 128` uint8 transport -- are pinned byte-identical against the host reference
+by `tools/test_si_patch.py`, over real takes and over the crop/pad boundaries.
+
+### The operating point, measured through this path
+
+10 real takes of 9 keyword classes and 12 real out-of-vocabulary takes, all
+endpointed by `src/vad.py` and scored on the board through `si_patch` plus
+TinyMaix -- **not** through the `.tflite`.
+
+| | |
+| --- | --- |
+| argmax correct on positives | 7/10 |
+| argmax `unknown` on negatives | **12/12** |
+| **precision** | **1.000** |
+| **recall** | **0.600** |
+| `THRESHOLD` | 0.35 |
+| `MARGIN` | 2/256 |
+
+**Re-measuring was not optional, and the placeholder proves it.** Before this
+sweep `si_spot.py` carried 0.90 / 0.50, chosen to look conservative. Measured,
+that pair fires on **nothing at all** -- recall 0.000. A plausible-looking guess
+at a gate is a spotter that never speaks.
+
+**The gates are very nearly inert, and that is the finding.** No negative ever
+produced a keyword argmax and no positive was ever labelled as the *wrong*
+keyword, so precision is 1.000 at any setting and the gates only cost recall.
+The trained `unknown` class is doing all the rejection work, which is the
+argument for having trained one rather than thresholding a 21-way softmax.
+
+They are non-zero anyway for one measured reason and one principled one. The
+`father` take came back correct with a margin of **exactly 0.0000** -- top-1 and
+top-2 equal, a coin flip that landed right. `docs/speech.md` is explicit that an
+utterance resembling two things equally should produce silence whatever its
+absolute score, and that argument does not depend on which way the coin came
+down. `MARGIN = 2/256` is two output quantisation steps, the smallest gate that
+means anything, and it costs exactly one take (recall 0.700 -> 0.600).
+`THRESHOLD = 0.35` sits below every correct fire in the set, so it costs nothing
+measurable and is prudence rather than evidence.
+
+**What this is not** is an accuracy figure. Ten positives means recall moves in
+steps of 0.1, and precision 1.000 rests on twelve negatives never firing. It is
+enough to ship a toy whose failure mode is a deflection. The honest next step is
+more negatives, not more tuning.
+
+One encouraging detail: the words that most attacked DTW all reject cleanly
+here. `other` -> unknown at 0.879, `mothers` -> unknown at 0.984, `brothers`,
+`know`, `want`, `need` all unknown. `docs/speech.md` records "other" -> FATHER
+at 727 as the most dangerous false fire in the DTW corpus.
+
+### A full turn, on the glass
+
+Driven from real recordings through the shipping path -- `_spot_keyword`, the
+ELIZA session, and the panel:
+
+| input | heard | reply | panel |
+| --- | --- | --- | --- |
+| `mother_01` | **mother** | *"Tell me more about your family"* | 1727 ms, full |
+| `father_01` | none (tie rejected) | *"I am not sure I understand you fully"* | 624 ms, partial |
+| `other_01` | none | *"Please go on"* | 609 ms, partial |
+
+The panel figures are the point of that last column. `docs/hardware.md` measures
+a real full refresh at 1715 ms and a partial at 612 ms, and an unpowered panel
+returns in about zero while every SPI write still succeeds -- so those wall
+times, with BUSY asserted, are what says the glass actually changed rather than
+that the code completed.
+
+### Turn budget, measured
+
+| stage | 36-frame take |
+| --- | --- |
+| front end (`spotter._mfcc_at` x 36, plus its discarded DCT) | 224.2 ms |
+| normalisation and packing (`si_patch.normalise_into`) | 23.4 ms |
+| inference | 66.6 ms |
+| **recognition total** | **317 ms** |
+| panel refresh (partial) | 624 ms |
+| **turn** | **~940 ms** |
+
+The front end dominates recognition at 71%, inference is 21%, and the panel
+dominates the turn. Nothing here is a candidate for optimisation before the
+e-paper is.
+
 ## What is still unknown
 
 Closed this session: the import, the arithmetic, RAM, inference time, and the
@@ -499,15 +602,17 @@ scratch-buffer overrun.
 
 Still open, in the order they matter:
 
-1. **The operating point.** `si-model`'s precision 1.000 at recall 0.500 was
-   measured on the `.tflite`, and the `.tmdl` does not compute the same numbers.
-   Nothing is known about the threshold and margin gates on the device. This is
-   now the largest open question and it did not exist before this session.
-2. **Rejection.** Even with the gates tuned, whether a 22-class softmax can hold
-   precision at 1.000 the way the DTW threshold-plus-margin pair does is
-   unmeasured. `docs/speech.md` argues why precision is the metric that matters.
-3. **Real speech end to end.** The front end has never fed the CNN on the
-   device. Everything measured here used patches computed on the host.
+1. **Negatives.** Precision 1.000 rests on twelve out-of-vocabulary takes. That
+   is the thinnest part of the whole result, and the gates cannot be tuned
+   against a false fire that has never been observed. More negatives is worth
+   more than anything else on this list.
+2. **A live human voice.** Every turn measured has been driven from a recording
+   through the microphone-onward path. Nobody has pressed the screen and spoken
+   to it. The capture path is exercised by enrolment and the recogniser by these
+   takes, but not the two joined at the actual microphone.
+3. **Recall is 0.600 on ten takes**, so three of nine classes were missed and
+   the granularity is 0.1. Whether that is the model, the operating point, or
+   this speaker is not separable at this sample size.
 4. **The unclamped-output counter**, item 4 above. It is one candidate
    explanation for the divergence and has not been isolated from the others.
 5. **Whether the divergence is TinyMaix-generic or model-specific.** Ruling on

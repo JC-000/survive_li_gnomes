@@ -31,6 +31,17 @@ cd "$(dirname "$0")/.."
 # path looking merely like a shy recogniser.
 TEMPLATE_BLOB="src/templates.bin"
 
+# The CNN spotter's two data files. `si_real` is the model that ships: it is the
+# one trained on the real-speaker corpus, and its classes are the family nouns
+# (mother, father, wife) that ELIZA gets the most out of echoing. `si_am` covers
+# the emotional words instead and has never been converted to a .tmdl; if it
+# ever is, this is the one line to change.
+#
+# Measured through this exact path on 10 real takes and 12 real negatives:
+# precision 1.000, recall 0.600. See docs/cnn-on-device.md.
+CNN_MODEL="${CNN_MODEL:-models/si_real.tmdl}"
+CNN_MODULE="${CNN_MODULE:-vendor/emlearn_cnn_int8.mpy}"
+
 SHARED="board epaper es8311 audio_pio_mpy magic8"
 
 case "$PROGRAM" in
@@ -60,7 +71,7 @@ case "$PROGRAM" in
         # board that is merely deployed, without mounting src/. That check is
         # the only one the host suite cannot do, and it wants to be available
         # after a firmware change, not only at the bench.
-        MODULES="$SHARED listen vad screen record_stream vocab eliza eliza_rules speech_tables spotter speech_fixtures templates"
+        MODULES="$SHARED listen vad screen record_stream vocab eliza eliza_rules speech_tables spotter speech_fixtures templates si_patch si_spot"
         ENTRY="src/talk.py"
         CLIPS=0
         READY="Hold the screen or POWER, speak, then let go."
@@ -108,6 +119,39 @@ if [ "$PROGRAM" = "eliza" ] || [ "$PROGRAM" = "talk" ]; then
         echo "     For the FIRST run on hardware use --pack full: it needs no"
         echo "     on-device expansion pass, so a recogniser that misbehaves has"
         echo "     one fewer untested cause. Same RAM, 140 KB of flash not 70."
+    fi
+fi
+
+# The CNN. `si_spot` asks for these two and degrades to DOCTOR's no-keyword path
+# without them, so a missing model is a warning and not a failure -- but a model
+# that is *present and wrong* is worse than one that is absent, which is why the
+# check below is fatal rather than advisory.
+#
+# `tools/tmdl_info.py` refuses four things TinyMaix will otherwise do silently,
+# and one of them was confirmed on this board: an unpadded model overran its
+# heap allocation by 1164 bytes during a single inference and raised nothing.
+# See docs/cnn-on-device.md.
+if [ "$PROGRAM" = "eliza" ] || [ "$PROGRAM" = "talk" ]; then
+    if [ -f "$CNN_MODULE" ]; then
+        echo "  -> $(basename "$CNN_MODULE")"
+        uvx --quiet mpremote connect "$PORT" cp "$CNN_MODULE" ":$(basename "$CNN_MODULE")"
+    else
+        echo "  !! $CNN_MODULE missing - no CNN spotter; every turn deflects"
+        echo "     Fetch it on the Mac (the board has no networking):"
+        echo "     curl -O https://emlearn.github.io/emlearn-micropython/builds/latest/armv7emsp_6.3/emlearn_cnn_int8.mpy"
+    fi
+
+    if [ -f "$CNN_MODEL" ]; then
+        if python3 tools/tmdl_info.py "$CNN_MODEL" > /dev/null 2>&1; then
+            echo "  -> si_model.tmdl (from $CNN_MODEL)"
+            uvx --quiet mpremote connect "$PORT" cp "$CNN_MODEL" ":si_model.tmdl"
+        else
+            echo "  !! $CNN_MODEL FAILS tools/tmdl_info.py - refusing to deploy it" >&2
+            python3 tools/tmdl_info.py "$CNN_MODEL" >&2
+            exit 3
+        fi
+    else
+        echo "  !! $CNN_MODEL missing - no CNN spotter; every turn deflects"
     fi
 fi
 

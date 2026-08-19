@@ -57,6 +57,15 @@ try:
 except ImportError:
     spotter = None
 
+# The speaker-independent CNN spotter, and the one that ships. It taps
+# `spotter`'s front end, so both are deployed and `spotter` is imported above
+# whether or not DTW is ever asked. Imported defensively for the same reason as
+# everything else here: a board missing it must still hold a conversation.
+try:
+    import si_spot
+except ImportError:
+    si_spot = None
+
 # The enrolled word templates. A separate module from the spotter because it is
 # a 137 KB buffer with a loader, not code -- see reserve_templates() for why
 # main() allocates it rather than letting the import do it.
@@ -64,6 +73,10 @@ try:
     import templates
 except ImportError:
     templates = None
+
+# Bound once by reserve(); None until then, and None forever on a board where
+# the model or the native module is missing.
+_si = None
 
 POLL_MS = 50
 
@@ -233,19 +246,39 @@ def _spot_keyword(samples, start, end):
     behaviour, not an error state -- and it is also what a deliberate rejection
     looks like, since the spotter is tuned for precision over recall.
     """
+    # The CNN first, and DTW only if it is unavailable. Both print their scores
+    # rather than only their verdict: the gates are tuned numbers measured on a
+    # small set, and a device that prints a bare answer gives nobody anything to
+    # re-tune with.
+    if _si is not None and _si.available:
+        try:
+            label, top, margin, idx, frames, clipped = _si.scored(
+                samples, start, end - start)
+            # frames and clipped are here for diagnosis, not for show: a word
+            # clipped at its onset reads as a short span, and a large clip count
+            # means the input is railing -- neither is visible in the
+            # probabilities, and both look like "the model is bad".
+            print("   cnn: %s (top %s p=%.3f margin=%.3f, %d frames, %d clipped)"
+                  % (label or "-", si_spot.CLASSES[idx] if idx >= 0 else "?",
+                     top, margin, frames, clipped))
+            return label
+        except Exception as exc:  # noqa: BLE001
+            # Falls through to DTW rather than returning: a native module that
+            # misbehaves is exactly the case the parked path was kept for.
+            print("cnn failed (%s: %s)" % (type(exc).__name__, exc))
+
     if spotter is None:
         return None
     try:
-        # spot_scored returns (label, best, runner_up) and spot is the same
-        # thing with the scores dropped. Preferred here purely so the scores
-        # reach the log: the two rejection gates are tuned numbers that have to
-        # be re-measured against templates enrolled through this board's own
-        # ES8311, and a device that only ever prints the verdict gives nobody
-        # anything to tune with.
+        # DTW is parked, not deleted. It is speaker-dependent and needs
+        # templates enrolled through this board, which the workshop build does
+        # not have -- so on that build `templates` is absent, `spot_scored`
+        # finds nothing bound, and this returns None. That is the intended
+        # shape, not a missing feature.
         scored = getattr(spotter, "spot_scored", None)
         if scored is not None:
             label, best, runner_up = scored(samples, start, end)
-            print("   spot: %s (best %s, runner-up %s)"
+            print("   dtw: %s (best %s, runner-up %s)"
                   % (label or "-", best, runner_up))
             return label
         return spotter.spot(samples, start, end)
@@ -477,9 +510,34 @@ def reserve():
     keeps it alive. Dropping the name frees the templates at some unrelated
     later collection, which is a slow and baffling failure.
     """
+    global _si
+
     recorder = listen.Recorder()                # 94 KB, but 188 KB to build
+
+    # The CNN before the templates. Measured: the model costs 43 KB at rest and
+    # peaks at 64 KB while the caller's array('B') of the file is still alive,
+    # and `array('B')` is mandatory -- the native module rejects a bytearray.
+    # Loading it before the templates' flat 137 KB keeps the whole-program peak
+    # ~9 KB lower, and it is the path that has to work.
+    if si_spot is not None:
+        _si = si_spot.Spotter()
+        if _si.bind(buffers=si_patch_buffers()):
+            print("cnn spotter ready (%d classes)" % _si.n_classes)
+        else:
+            print("cnn spotter unavailable (%s)" % _si.error)
+
     template_buf = reserve_templates()          # 137 KB, no transient
     return recorder, template_buf
+
+
+def si_patch_buffers():
+    """The front-end scratch the CNN path needs, or None to let it allocate.
+
+    Separate so `tools/test_talk.py` can assert the allocation order without
+    reaching into the spotter, the same way it does for the other two blocks.
+    """
+    import si_patch
+    return si_patch.allocate()
 
 
 def main():

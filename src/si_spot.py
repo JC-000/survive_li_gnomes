@@ -1,0 +1,242 @@
+"""The speaker-independent keyword spotter: log-mel patch -> int8 CNN -> label.
+
+Replaces the DTW matcher as the recogniser that ships. `src/spotter.py` stays
+deployed and is not deleted -- it is the front end this file taps, it is the
+specification the port is proved against, and it is the fallback if the native
+module misbehaves. What changed is which one `talk.py` asks first.
+
+## Why this one and not DTW
+
+DTW needs templates enrolled through this board by the person who will use it.
+Measured, cross-microphone enrolment collapses top-1 from 69/70 to 36/70
+(`docs/speech.md`), and the failure mode is not silence but *confident errors*.
+The build this is going into is a workshop piece for many speakers with no
+enrolment step, so speaker dependence was the wrong shape regardless of accuracy.
+
+It is also cheaper. Measured on this board: **66.6 ms** of inference against
+DTW's **616-672 ms** of matching, and flat in class count where DTW is linear in
+template count. See `docs/cnn-on-device.md`.
+
+## What the native module requires, and why each line below exists
+
+`emlearn_cnn_int8` is a thin wrapper over TinyMaix and several of its
+assumptions are the caller's problem. Four of them bite silently and are guarded
+on the host by `tools/tmdl_info.py`, which every model must pass before it is
+deployed -- `tools/deploy.sh` refuses otherwise:
+
+- the activation scratch is sized to the **model file length**, unchecked, so a
+  model needing more writes past its allocation. Confirmed on this board: 1164
+  bytes overwritten, nothing raised. The shipped `.tmdl` is `--pad`ded.
+- a per-channel-quantised dense layer silently uses only the first scale;
+- `out_deq` must be 1 or the scores come back as reinterpreted bytes;
+- `run()` takes `array('B')` and returns into `array('f')`. A `bytearray` is
+  rejected outright.
+
+## The class order is derived, never copied
+
+`CLASSES` is built from `vocab.LABELS`, which is what `tools/si_features.py`
+does to build the training labels. Both sides derive from the one source, so
+they cannot drift apart the way a transcribed list would -- and `bind()` checks
+the model's output width against it, so a model trained on a different
+vocabulary fails loudly at load instead of relabelling every reply.
+
+## Rejection is the whole game
+
+`docs/speech.md` argues it at length and none of it changed: `argmax` always
+returns a word, so without a gate a cough becomes "DO YOU OFTEN THINK OF MONEY"
+and the illusion dies. A miss costs nothing, because ELIZA deflects in character.
+
+There are three gates here rather than DTW's two. The extra one is the trained
+`unknown` class, which is the honest way to say "none of these" -- a softmax over
+keywords alone cannot represent it and has to fake it by being unconfident.
+"""
+
+from array import array
+
+import si_patch
+
+try:
+    import vocab
+except ImportError:
+    vocab = None
+
+# The native module. Absent on the host, and absent on a board where it was not
+# deployed; both must degrade to "no keyword" rather than fail to start, exactly
+# as the DTW spotter does.
+try:
+    import emlearn_cnn_int8 as _cnn
+except ImportError:
+    _cnn = None
+
+MODEL_PATH = "si_model.tmdl"
+
+UNKNOWN = "unknown"
+CLASSES = (tuple(vocab.LABELS) + (UNKNOWN,)) if vocab is not None else ()
+UNKNOWN_INDEX = len(CLASSES) - 1
+
+# --- The operating point ---------------------------------------------------
+#
+# **Measured on this board**, 2026-08-18, against 10 real takes of 9 keyword
+# classes and 12 real out-of-vocabulary takes, all endpointed by `src/vad.py`
+# and run through this exact path -- `si_patch` plus TinyMaix, not the `.tflite`.
+#
+#     precision 1.000, recall 0.600
+#
+# Re-measuring was not optional. `si-model` measured precision 1.000 at recall
+# 0.500 against the `.tflite`, and that number does not transfer: TinyMaix is an
+# independent reimplementation and computes different values from the same
+# weights. The placeholder these constants replaced -- 0.90 and 0.50, picked to
+# be conservative -- would have fired on **nothing at all**, recall 0.000. A
+# plausible-looking guess at a gate is a spotter that never speaks.
+#
+# ## The gates are very nearly inert, and that is the finding
+#
+# Every one of the 12 negatives came back `unknown` by argmax, and no positive
+# was ever labelled as the *wrong* keyword. So precision is 1.000 at any
+# setting, and the threshold and margin only ever cost recall. **The trained
+# `unknown` class is doing all of the rejection work**, which is the argument
+# for having trained one rather than thresholding a 21-way softmax.
+#
+# They are set to something rather than to zero anyway, for one measured reason
+# and one principled one:
+#
+# - MARGIN excludes **ties**. The `father` take came back correct with a margin
+#   of exactly 0.0000 -- top-1 and top-2 equal -- so it was a coin flip that
+#   happened to land right. `docs/speech.md` is explicit that an utterance
+#   resembling two things equally should produce silence whatever its absolute
+#   score, and that argument does not depend on which way this particular coin
+#   came down. The softmax output is dequantised int8 with `out_s = 1/256`, so
+#   2/256 is "at least two quantisation steps clear" and is the smallest gate
+#   that means anything. It costs exactly one take: recall 0.700 -> 0.600.
+# - THRESHOLD is a floor below every correct fire in the set (the lowest is
+#   `dream` at 0.402), so on this data it costs **nothing measurable**. It is
+#   there against a low-confidence wrong-keyword fire, of which this set
+#   contains zero examples -- so it is prudence, not evidence.
+#
+# ## What this operating point is not
+#
+# Ten positives and twelve negatives. Recall moves in steps of 0.1 and precision
+# 1.000 rests on twelve negatives never firing. It is enough to ship a workshop
+# toy whose failure mode is a deflection; it is not enough to quote as an
+# accuracy figure, and the honest next step is more negatives rather than more
+# tuning. `docs/cnn-on-device.md` records the full table.
+THRESHOLD = 0.35        # top-1 probability floor  -- costs nothing on this set
+MARGIN = 2.0 / 256.0    # top-1 minus top-2, two output quantisation steps
+
+
+class Spotter:
+    """Holds the model, the front-end scratch and the patch buffer.
+
+    One object for the life of the program. `bind()` is separate from `__init__`
+    so the caller controls *when* the 43 KB of model lands on the heap --
+    allocation order is a whole-program concern and `docs/speech.md` records
+    what learning that cost.
+    """
+
+    def __init__(self):
+        self.model = None
+        self.buffers = None
+        self.scores = None
+        self.n_classes = 0
+        self.error = None
+
+    @property
+    def available(self):
+        return self.model is not None
+
+    def bind(self, path=MODEL_PATH, buffers=None):
+        """Load the model. Returns True on success; never raises.
+
+        A board that cannot load the model must still hold a conversation --
+        every turn simply takes DOCTOR's no-keyword path, which is a real ELIZA
+        behaviour. `self.error` carries why, because a spotter that is silently
+        absent looks exactly like one that is merely strict.
+        """
+        if _cnn is None:
+            self.error = "emlearn_cnn_int8 not deployed"
+            return False
+        if not CLASSES:
+            self.error = "vocab not deployed, so no class order"
+            return False
+        try:
+            handle = open(path, "rb")
+            try:
+                blob = handle.read()
+            finally:
+                handle.close()
+
+            # array('B') and not bytearray: the wrapper checks the buffer's
+            # typecode and raises ValueError("model should be bytes") for a
+            # bytearray. Verified on the board.
+            data = array("B", blob)
+            del blob
+            self.model = _cnn.new(data)
+            del data
+
+            dims = self.model.output_dimensions()
+            self.n_classes = dims[0]
+            if self.n_classes != len(CLASSES):
+                # Loud, and at load rather than at the first reply. A model with
+                # a different output width is a model trained on a different
+                # vocabulary, and quietly using it would relabel every answer.
+                self.model = None
+                self.error = ("model has %d outputs, vocabulary has %d"
+                              % (self.n_classes, len(CLASSES)))
+                return False
+
+            self.scores = array("f", (0.0 for _ in range(self.n_classes)))
+            self.buffers = buffers if buffers is not None else si_patch.allocate()
+            self.error = None
+            return True
+        except Exception as exc:      # noqa: BLE001 -- degrading is the point
+            self.model = None
+            self.error = "%s: %s" % (type(exc).__name__, exc)
+            return False
+
+    def scored(self, samples, start, count, pre=None):
+        """-> (label or None, top1 probability, margin, class index,
+              frames, clipped).
+
+        `frames` and `clipped` are diagnostics, not results, and they are
+        returned rather than dropped because between them they distinguish the
+        two ways a live utterance goes wrong without anything raising. `frames`
+        says what the endpointer handed over -- a word clipped at its onset
+        shows up as a short span. `clipped` counts feature values that hit the
+        int8 rail: a handful is the spectral floor doing its job, and a large
+        count means the input is railing or the shift is wrong, which is
+        invisible in the probabilities but obvious here.
+
+        The scores are returned whether or not the gates fire, because the gates
+        are numbers that still have to be tuned on this board and a device that
+        prints only its verdict gives nobody anything to tune with.
+        """
+        if self.model is None:
+            return None, 0.0, 0.0, -1, 0, 0
+
+        patch, n_frames, clipped = si_patch.patch_for(
+            samples, start, count, self.buffers, pre)
+        if patch is None:
+            return None, 0.0, 0.0, -1, 0, 0
+
+        self.model.run(patch, self.scores)
+
+        scores = self.scores
+        best = 0
+        for i in range(1, self.n_classes):
+            if scores[i] > scores[best]:
+                best = i
+        second = -1.0
+        for i in range(self.n_classes):
+            if i != best and scores[i] > second:
+                second = scores[i]
+
+        top = scores[best]
+        margin = top - second
+
+        label = None
+        if best != UNKNOWN_INDEX and top >= THRESHOLD and margin >= MARGIN:
+            label = CLASSES[best]
+        return label, top, margin, best, n_frames, clipped
+
+    def spot(self, samples, start, count, pre=None):
+        return self.scored(samples, start, count, pre)[0]
