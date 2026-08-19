@@ -413,6 +413,16 @@ def main(argv=None):
         takes = takes_from_dir(args.source_dir)
         source = args.source_dir
 
+    # Enrolment is the step between adding a word and shipping it, so it is
+    # the last cheap moment to catch an echo that will shrink every reply on
+    # the panel. Uses vocab's declaration rather than a fresh literal.
+    # vocab.MAX_ECHO_LETTERS, not a getattr fallback: a default here would be
+    # a fourth copy of the ceiling, hidden in an argument, silently wrong the
+    # moment the real one changed. If the constant is missing, that is a broken
+    # vocab.py and enrolment should stop rather than guess.
+    overlong = [(e[0], e[1]) for e in vocab.VOCAB
+                if len(e[1]) > vocab.MAX_ECHO_LETTERS]
+
     missing = [f for f in vocab.FORMS if not takes.get(f)]
     thin = [(f, len(takes[f])) for f in vocab.FORMS
             if takes.get(f) and len(takes[f]) < REPS]
@@ -434,6 +444,12 @@ def main(argv=None):
           % (len(blob), len(blob) / 1024.0))
     if missing:
         print("  MISSING, no template at all: %s" % ", ".join(missing))
+    for label, echo in overlong:
+        print("  ERROR: echo %r (%s) is %d letters; %d is the ceiling."
+              % (echo, label, len(echo), vocab.MAX_ECHO_LETTERS))
+        print("  A word this long drops EVERY reply on the panel from 16-pixel")
+        print("  to 8-pixel text -- silently, and not only for this word.")
+        print("  See the note in src/vocab.py.")
     if clamped:
         print("  ERROR: %d values clamped at int16 packing Q8 statics." % clamped)
         print("  The recording was loud enough to overflow the statics-only")
@@ -457,7 +473,7 @@ def main(argv=None):
               % py_bytes)
         print("  literal costs four characters per byte and MicroPython has to")
         print("  compile it inside a ~490 KB heap. Use --format bin.")
-    return 1 if (missing or clamped) else 0
+    return 1 if (missing or clamped or overlong) else 0
 
 
 if __name__ == "__main__":

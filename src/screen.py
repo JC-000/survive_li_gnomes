@@ -39,6 +39,32 @@ first, and it gives by dropping a reply to scale 1 rather than by truncating --
 
 Text is left-aligned, unlike magic8's centred one-liners. Centred prose reads as
 a poem.
+
+## An echoable noun may not exceed `_SIZES[0][1] - 1` letters (11 today)
+
+`fit()` rejects a size outright if any single word exceeds the column count --
+before it counts lines at all, because a hard-split word reads worse than one
+size smaller. At scale 2 that is 12 columns, and an echoed noun arrives carrying
+the reply's terminal punctuation, so twelve letters plus a mark is thirteen
+characters and scale 2 is skipped for the **whole reply**:
+
+    GRANDMOTHER   (11)  "Your grandmother?"    scale 2   fine
+    RELATIONSHIP  (12)  "Your relationship?"   scale 1   everything shrinks
+
+It holds mid-sentence too -- "...your relationship." is a 13-character word. The
+longest noun in `vocab.NOUNS` today is CHILDREN at 8, so there is room.
+
+**The authority for that number is `_SIZES` above, not this paragraph.**
+`vocab.MAX_ECHO_LETTERS` declares it because `screen` needs `framebuf` and so is
+not importable on a host without stubs; `tools/test_talk.py` stubs framebuf and
+asserts the declaration equals `_SIZES[0][1] - 1`, and that a noun one letter
+over really does drop the reply to the small size. So changing `_SIZES` fails a
+test rather than quietly invalidating a constant in another file.
+
+Worth knowing because of how it would present: the failure is not truncation or
+an error, it is every reply on the device suddenly rendering in 8-pixel text
+because one word was added to a vocabulary. And it is a *display* constraint on
+a *recogniser* decision, so nothing in a confusion matrix will ever show it.
 """
 
 import magic8

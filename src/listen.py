@@ -169,10 +169,18 @@ class Recorder:
         self._codec = None
         self._pa = None
         self._dma = None
-        self._chirp = None
+        # Built HERE, not lazily at the first press. The lazy version shipped
+        # and failed live: by the time a press arrives the heap also holds the
+        # TFLM arena, the model blob, the capture buffer and the rules, and a
+        # 19,200-byte contiguous block was refused -- every turn, silently,
+        # because chirp() swallows its own errors by design. Allocate-once at
+        # construction is this codebase's rule precisely because "later" is
+        # when the heap is worst. (~19 KB at 16 kHz: 4 B x rate x CHIRP_MS.)
+        self._chirp = _build_chirp(self.rate)
         self._started_us = 0
         self._recording = False
         self._final_count = 0
+        self._dout_ready = False
         self.available = None  # None = untried, True/False once known
 
     # --- setup -------------------------------------------------------------
@@ -288,9 +296,9 @@ class Recorder:
         if not self._ensure(i2c):
             return False
         try:
-            if self._chirp is None:
+            if not self._dout_ready:
                 self._audio.dout_pio_init()
-                self._chirp = _build_chirp(self.rate)
+                self._dout_ready = True
             # The DAC comes out of reset muted and `es8311.init()` does not
             # clear it -- shake.py:84 unmutes and this module never did, because
             # until now it only ever recorded. Without this the chirp plays into

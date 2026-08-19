@@ -54,6 +54,29 @@ sentence, and a single shouted word mid-reply looks like a bug rather than
 emphasis.
 """
 
+# The panel imposes a hard ceiling on echo text, and it is invisible from the
+# acoustic side: **an echoable noun may not exceed 11 letters.**
+#
+# `screen.fit` rejects a text size outright if any single word exceeds the
+# column count, before it counts lines, because a hard-split word reads worse
+# than one size smaller. At scale 2 that is 12 columns, and an echoed noun
+# arrives carrying the reply's punctuation -- "Your relationship?" is 13 --
+# so a 12-letter noun drops **the whole reply** from 16-pixel to 8-pixel text.
+# Not truncation, not an error: every reply the device gives renders small from
+# the moment one long word joined this list.
+#
+# Nothing on the recogniser side can see this. A confusion matrix, a DTW score
+# and a margin sweep will all say yes to a long noun -- enthusiastically, in
+# fact, because long words carry more phonetic evidence and are the *easy* ones
+# to spot. COMPUTER and CHILDREN are among the safest words here. So the
+# constraint has to live where words are added, which is this file.
+#
+# The authority is `screen._SIZES[0][1] - 1`. screen.py needs framebuf and so
+# cannot be imported on the host, which is why this is declared rather than
+# derived; tools/test_eliza.py enforces it and tools/record_templates.py
+# refuses to enrol past it. Longest today is CHILDREN at 8.
+MAX_ECHO_LETTERS = 11
+
 # (label, echo text, spoken forms recorded as templates, kind)
 #
 # `kind` is what ELIZA does with a hit, and it is data rather than a comment

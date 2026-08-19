@@ -548,6 +548,49 @@ def test_unreachability_is_a_property_of_talk():
           "found a call to respond(), which makes PHRASE and MEMORY reachable")
 
 
+def test_the_noun_ceiling_is_derived_not_remembered():
+    """`vocab.MAX_ECHO_LETTERS` must equal what the renderer actually allows.
+
+    The number 11 now lives in three places -- prose in `screen.py`, a constant
+    in `vocab.py`, and an assertion in `test_eliza.py` -- and only one of them is
+    the authority: `screen._SIZES[0][1] - 1`, the scale-2 column count less one
+    character for the punctuation an echoed noun carries.
+
+    `screen` needs `framebuf`, so it is not importable on the host without
+    stubs, which is why the constant was declared rather than derived. This file
+    already stubs `framebuf`, so this is the one place the declaration can be
+    checked against the mechanism. Change `_SIZES` and this fails, rather than
+    silently invalidating a constant three files away.
+
+    The last check is the one that makes the others mean something: it asserts
+    the *behaviour* rather than agreement between two numbers. A noun one letter
+    over the ceiling really does drop the whole reply to 8-pixel text.
+    """
+    print("noun ceiling: declared vs what the renderer does")
+    ceiling = getattr(vocab, "MAX_ECHO_LETTERS", None)
+    check("vocab declares MAX_ECHO_LETTERS", ceiling is not None)
+    if ceiling is None:
+        return
+
+    scale, cols, _lines = screen._SIZES[0]
+    check("MAX_ECHO_LETTERS == scale-%d columns - 1 (%d - 1 = %d)"
+          % (scale, cols, cols - 1), ceiling == cols - 1,
+          "declared %d, mechanism gives %d" % (ceiling, cols - 1))
+
+    over = [n for n in vocab.NOUNS if len(n) > ceiling]
+    longest = max(vocab.NOUNS, key=len)
+    check("every echoable noun is within the ceiling (longest %r at %d)"
+          % (longest, len(longest)), not over, "over: %s" % over)
+
+    # Behaviour, not arithmetic: one letter under fits, one letter over does not.
+    fits = "a" * ceiling
+    breaks = "a" * (ceiling + 1)
+    check("a %d-letter noun renders at the large size" % ceiling,
+          screen.fit("Your %s?" % fits)[0] == scale)
+    check("a %d-letter noun drops the whole reply to the small size"
+          % (ceiling + 1), screen.fit("Your %s?" % breaks)[0] != scale)
+
+
 def test_the_reply_renders():
     """The panel budget, at the echo width the device actually produces.
 
@@ -703,6 +746,7 @@ def main():
     test_degraded_paths()
     test_allocation_order()
     test_the_corpus_is_complete()
+    test_the_noun_ceiling_is_derived_not_remembered()
     test_unreachability_is_a_property_of_talk()
     test_the_reply_renders()
     test_panel_refresh_policy()
