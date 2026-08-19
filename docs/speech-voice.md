@@ -89,22 +89,36 @@ and at the desk that is indistinguishable from a decoder bug or a flat battery.
 
 ## The short version
 
-1. **Speaking every reply does not fit, at any audio format.** The full corpus is
-   379 sentences, 885 s, and **3.38 MB even at 8 kHz 4-bit ADPCM** — over a 3 MB
-   filesystem that also holds the code, the templates and the existing clips.
-   This is the finding that constrains the feature.
-2. **Splicing makes it fit easily** — 132 clips, 249 s, **1.90 MB at 16 kHz**,
-   over a megabyte spare. Splicing is therefore not an optimisation. It is the
-   difference between speaking the whole script and not.
-3. **But the splice measures badly**: a pitch step of most of an octave at every
-   join, where the intact sentence moves by a tone, and no `say` control can
-   smooth it. Whether that is disqualifying is an ear judgement nobody has made
-   yet, and it is the single most consequential thing still open.
-4. **If it is disqualifying, the corpus truncates gracefully.** A template with
-   no clip for the noun it heard falls through to a deflection, which is a real
-   DOCTOR response. Roughly 7 nouns fit at 8 kHz, 2 at 16 kHz.
-5. **Recommended voice: Ava (Premium) at `p3-warm`** — `[[pbas 42]]`, `-r 100`,
-   one `[[slnc 220]]` — landing at 148 Hz from a 172 Hz natural.
+Every line here is written to survive being quoted on its own, because the
+version this replaced did not: it opened "speaking every reply does not fit, at
+any audio format", which was true of a corpus three times larger than this
+device can reach and of a filesystem five times smaller than the one it has.
+
+1. **Recommended voice: Ava (Premium) at `p3-warm`** — `[[pbas 42]]`, `-r 100`,
+   one `[[slnc 220]]` — landing at 148 Hz from a 172 Hz natural. This is the
+   one recommendation that survived contact with the hardware: the shipped
+   corpus measures **149.5 Hz**.
+2. **Speaking every reply fits, comfortably.** The device can reach 113 replies,
+   which render to 248 s and **1.89 MB** at 16 kHz 4-bit IMA ADPCM — 12.6% of a
+   15 MB filesystem, and 7.56 MB if it were left uncompressed. Every reply is
+   rendered whole. Nothing is spliced, nothing is truncated, and the vocabulary
+   keeps all twelve nouns.
+3. **The corpus is 113 replies, not 379.** 379 counts every reply template
+   crossed with every filler it grammatically accepts. `talk.py` hands the
+   engine a bag of exactly one spotted word and the first matching rule
+   answers, so most of them are unreachable — see
+   [the correction](#correction-2026-08-19-the-corpus-is-113-clips-and-189-mb).
+4. **`say` gives you pitch, rate, volume and inserted silence, and nothing
+   else.** `[[pmod]]` and `[[emph]]` render byte-identical output at every
+   value, and `-r` buys 1.33x for a 3.2x request. Unchanged by any of the
+   above, and still the most reusable thing in this document.
+5. **The remaining question was always the ear, and it still is.** Nothing
+   below was arrived at by listening; every ranking is derived from measured
+   frequencies plus stated reasoning from them.
+
+Two findings that constrained this work no longer apply and are kept for the
+record rather than as guidance: the corpus did not fit (it does), and splicing
+was the only way to make it fit (it is not). Both sections say so at the top.
 
 ## Why pre-rendered, and why that makes vocabulary the constraint
 
