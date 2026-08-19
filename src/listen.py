@@ -169,14 +169,15 @@ class Recorder:
         self._codec = None
         self._pa = None
         self._dma = None
-        # Built HERE, not lazily at the first press. The lazy version shipped
-        # and failed live: by the time a press arrives the heap also holds the
-        # TFLM arena, the model blob, the capture buffer and the rules, and a
-        # 19,200-byte contiguous block was refused -- every turn, silently,
-        # because chirp() swallows its own errors by design. Allocate-once at
-        # construction is this codebase's rule precisely because "later" is
-        # when the heap is worst. (~19 KB at 16 kHz: 4 B x rate x CHIRP_MS.)
-        self._chirp = _build_chirp(self.rate)
+        # NOT built here, and not lazily at the first press either -- both
+        # shipped and both failed live, one press-time (no 19,200-byte block
+        # left once the arena and model were resident) and one boot-time (the
+        # constructor runs before the TFLM arena, and building the chirp first
+        # starved the 64 KB arena instead). The chirp is the SMALLEST of the
+        # boot-time reservations, so it goes last: talk.reserve() calls
+        # prepare_chirp() after the capture buffer, the spotter arena and the
+        # templates. Order by size, largest first; the smallest thing yields.
+        self._chirp = None
         self._started_us = 0
         self._recording = False
         self._final_count = 0
@@ -278,6 +279,20 @@ class Recorder:
             trigger=True,
         )
 
+    def prepare_chirp(self):
+        """Build the activation tone buffer. Call at boot, AFTER the large
+        reservations (capture, arena, templates) -- see the constructor note.
+        Safe to call twice; returns False (and stays silent-capable) if even
+        ~19 KB cannot be found, in which case chirp() degrades as designed."""
+        if self._chirp is not None:
+            return True
+        try:
+            self._chirp = _build_chirp(self.rate)
+            return True
+        except MemoryError:
+            print("chirp buffer did not fit; the toy will be silent")
+            return False
+
     def chirp(self, i2c):
         """Play the activation tone and wait it out. Returns True if it sounded.
 
@@ -296,6 +311,8 @@ class Recorder:
         if not self._ensure(i2c):
             return False
         try:
+            if self._chirp is None:
+                return False   # prepare_chirp() never ran or did not fit
             if not self._dout_ready:
                 self._audio.dout_pio_init()
                 self._dout_ready = True

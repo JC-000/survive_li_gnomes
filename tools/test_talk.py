@@ -432,14 +432,20 @@ def test_allocation_order():
             def __init__(self, *a, **k):
                 order.append("capture")
 
+            def prepare_chirp(self):
+                # Part of the contract since the tone buffer moved into the
+                # boot reservations; must run LAST of them.
+                order.append("chirp")
+                return True
+
         talk.listen.Recorder = Recorder
         talk.templates = types.SimpleNamespace(
             PACKED="full", BUFFER_BYTES=64, TOTAL_FRAMES=2, INDEX=(),
             load=lambda buf=None, expand=None: order.append("templates") or buf)
 
         talk.reserve()
-        check("capture buffer is reserved before templates",
-              order == ["capture", "templates"], "order was %s" % order)
+        check("reservations in size order: capture, templates, chirp last",
+              order == ["capture", "templates", "chirp"], "order was %s" % order)
     finally:
         talk.listen.Recorder = saved_recorder
         talk.templates = saved_templates

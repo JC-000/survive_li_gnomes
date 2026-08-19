@@ -532,6 +532,12 @@ def reserve():
             print("cnn spotter unavailable (%s)" % _si.error)
 
     template_buf = reserve_templates()          # 137 KB, no transient
+
+    # Last, because it is smallest (~19 KB): the activation tone. Ordered
+    # after the arena on measurement -- built any earlier it starves the
+    # 64 KB arena; built any later (the original lazy design) the press-time
+    # heap refuses it and the toy goes silent. Both happened live.
+    recorder.prepare_chirp()
     return recorder, template_buf
 
 
