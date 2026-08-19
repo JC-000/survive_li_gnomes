@@ -52,7 +52,7 @@ PRE = "P"
 # Kinds a reply can actually be built from without a transcript.
 SPOTTABLE = (CANNED, LITERAL, NOUN)
 
-GREETING = 'HOW DO YOU DO. PLEASE TELL ME YOUR PROBLEM'
+GREETING = 'HOW DO YOU DO. PLEASE TELL ME YOUR PROBLEM.'
 
 # Applied to every input word before anything else. This is also ELIZA's
 # person swap -- I/YOU, MY/YOUR -- which is why the decompositions read as
@@ -141,7 +141,7 @@ RULES = {
     'BECAUSE': (0, None, (
         ((0,), (
             ('C', 'Q', 'IS THAT THE REAL REASON?'),
-            ('C', 'S', "DON'T ANY OTHER REASONS COME TO MIND."),
+            ('C', 'Q', "DON'T ANY OTHER REASONS COME TO MIND?"),
             ('C', 'Q', 'DOES THAT REASON SEEM TO EXPLAIN ANYTHING ELSE?'),
             ('C', 'Q', 'WHAT OTHER REASONS MIGHT THERE BE?'),
         )),
@@ -167,7 +167,7 @@ RULES = {
             ('C', 'Q', 'DO COMPUTERS WORRY YOU?'),
             ('C', 'Q', 'WHY DO YOU MENTION COMPUTERS?'),
             ('C', 'Q', 'WHAT DO YOU THINK MACHINES HAVE TO DO WITH YOUR PROBLEM?'),
-            ('C', 'S', "DON'T YOU THINK COMPUTERS CAN HELP PEOPLE."),
+            ('C', 'Q', "DON'T YOU THINK COMPUTERS CAN HELP PEOPLE?"),
             ('C', 'Q', 'WHAT ABOUT MACHINES WORRIES YOU?'),
             ('C', 'Q', 'WHAT DO YOU THINK ABOUT MACHINES?'),
         )),
@@ -193,7 +193,7 @@ RULES = {
             ('C', 'Q', 'WHAT DOES THAT DREAM SUGGEST TO YOU?'),
             ('C', 'Q', 'DO YOU DREAM OFTEN?'),
             ('C', 'Q', 'WHAT PERSONS APPEAR IN YOUR DREAMS?'),
-            ('C', 'S', "DON'T YOU BELIEVE THAT DREAM HAS SOMETHING TO DO WITH YOUR PROBLEM."),
+            ('C', 'Q', "DON'T YOU BELIEVE THAT DREAM HAS SOMETHING TO DO WITH YOUR PROBLEM?"),
             ('K', None, None),
         )),
     )),
@@ -221,7 +221,7 @@ RULES = {
             ('C', 'S', 'YOU ARE THINKING OF A VERY SPECIAL PERSON.'),
             ('C', 'Q', 'WHO, MAY I ASK?'),
             ('C', 'Q', 'SOMEONE SPECIAL PERHAPS?'),
-            ('C', 'S', "YOU HAVE A PARTICULAR PERSON IN MIND, DON'T YOU."),
+            ('C', 'Q', "YOU HAVE A PARTICULAR PERSON IN MIND, DON'T YOU?"),
             ('C', 'Q', "WHO DO YOU THINK YOU'RE TALKING ABOUT?"),
         )),
     )),
@@ -229,7 +229,7 @@ RULES = {
     )),
     'HELLO': (0, None, (
         ((0,), (
-            ('C', 'Q', 'HOW DO YOU DO. PLEASE STATE YOUR PROBLEM?'),
+            ('C', 'S', 'HOW DO YOU DO. PLEASE STATE YOUR PROBLEM.'),
         )),
     )),
     'HOW': (0, 'WHAT', (
@@ -279,7 +279,7 @@ RULES = {
             ('T', 'Q', 'DO YOU REALLY WANT TO BE ABLE TO 4?'),
         )),
         ((0, 'YOU', "DON'T", 0), (
-            ('T', 'S', "DON'T YOU REALLY 4."),
+            ('T', 'Q', "DON'T YOU REALLY 4?"),
             ('T', 'Q', "WHY DON'T YOU 4?"),
             ('T', 'Q', 'DO YOU WISH TO BE ABLE TO 4?'),
             ('C', 'Q', 'DOES THAT TROUBLE YOU?'),
@@ -364,9 +364,9 @@ RULES = {
         ((0,), (
             ('C', 'S', "YOU DON'T SEEM QUITE CERTAIN."),
             ('C', 'Q', 'WHY THE UNCERTAIN TONE?'),
-            ('C', 'S', "CAN'T YOU BE MORE POSITIVE."),
+            ('C', 'Q', "CAN'T YOU BE MORE POSITIVE?"),
             ('C', 'S', "YOU AREN'T SURE."),
-            ('C', 'S', "DON'T YOU KNOW."),
+            ('C', 'Q', "DON'T YOU KNOW?"),
         )),
     )),
     'REMEMBER': (5, None, (
@@ -393,7 +393,7 @@ RULES = {
     )),
     'SORRY': (0, None, (
         ((0,), (
-            ('C', 'S', "PLEASE DON'T APOLIGIZE."),
+            ('C', 'S', "PLEASE DON'T APOLOGIZE."),
             ('C', 'S', 'APOLOGIES ARE NOT NECESSARY.'),
             ('C', 'Q', 'WHAT FEELINGS DO YOU HAVE WHEN YOU APOLOGIZE?'),
             ('C', 'S', "I'VE TOLD YOU THAT APOLOGIES ARE NOT REQUIRED."),
@@ -482,7 +482,7 @@ RULES = {
         )),
         ((0, 'I', 0, 'YOU'), (
             ('T', 'Q', 'WHY DO YOU THINK I 3 YOU?'),
-            ('T', 'S', "YOU LIKE TO THINK I 3 YOU - DON'T YOU."),
+            ('T', 'Q', "YOU LIKE TO THINK I 3 YOU - DON'T YOU?"),
             ('T', 'Q', 'WHAT MAKES YOU THINK I 3 YOU?'),
             ('T', 'E', 'REALLY, I 3 YOU?'),
             ('T', 'Q', 'DO YOU WISH TO BELIEVE I 3 YOU?'),
@@ -492,7 +492,7 @@ RULES = {
         ((0, 'I', 0), (
             ('C', 'S', 'WE WERE DISCUSSING YOU - NOT ME.'),
             ('T', 'E', 'OH, I 3?'),
-            ('C', 'S', "YOU'RE NOT REALLY TALKING ABOUT ME - ARE YOU."),
+            ('C', 'Q', "YOU'RE NOT REALLY TALKING ABOUT ME - ARE YOU?"),
             ('C', 'Q', 'WHAT ARE YOUR FEELINGS NOW?'),
         )),
     )),

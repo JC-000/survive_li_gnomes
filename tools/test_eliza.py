@@ -779,6 +779,85 @@ class TestNoFragmentsOnThePanel(unittest.TestCase):
         self.assertIsNone(eliza.slot_of("YOUR?"))
 
 
+class TestReadsAsEnglish(unittest.TestCase):
+    """The rest of the fragment audit: everything else the sweep turned up.
+
+    Each of these was a template that rendered wrongly on a panel showing one
+    reply and nothing else -- no user text, no history, no scrollback. The
+    question mark fixed the bare echoes; these needed their own judgement.
+    """
+
+    def replies(self):
+        out = []
+        for keyword, (rank, goto, ruleset) in rules.RULES.items():
+            for pattern, templates in ruleset:
+                for kind, mood, payload in templates:
+                    if kind not in (rules.GOTO, rules.NEWKEY, rules.PRE):
+                        out.append((keyword, mood, payload))
+        out += [("NONE", None, t) for t in rules.NONE]
+        out += [("MEMORY", m, t) for _, m, t in rules.MEMORY]
+        return out
+
+    def test_a_negated_opener_is_a_question(self):
+        # "DON'T YOU KNOW" is a question; "I DON'T UNDERSTAND THAT" is not, and
+        # neither is the imperative "PLEASE DON'T APOLOGIZE". Position decides.
+        opens = [(k, p) for k, m, p in self.replies()
+                 if p.split()[0].strip(",") in ("DON'T", "CAN'T", "DOESN'T",
+                                                "AREN'T", "ISN'T", "WON'T")]
+        self.assertGreaterEqual(len(opens), 4, "negated openers vanished")
+        for keyword, payload in opens:
+            self.assertTrue(payload.endswith("?"), "%s: %r" % (keyword, payload))
+
+    def test_a_negation_mid_sentence_is_not_a_question(self):
+        for keyword, mood, payload in self.replies():
+            first = payload.split()[0].strip(",")
+            if first in ("I", "YOU", "PLEASE") and "N'T" in payload.upper():
+                if not payload.rstrip("?.").upper().endswith(("DON'T YOU",
+                                                              "ARE YOU")):
+                    self.assertTrue(payload.endswith("."),
+                                    "%s: %r" % (keyword, payload))
+
+    def test_a_tag_question_is_a_question(self):
+        # "YOU HAVE A PARTICULAR PERSON IN MIND, DON'T YOU" and
+        # "YOU'RE NOT REALLY TALKING ABOUT ME - ARE YOU".
+        tags = [(k, p) for k, m, p in self.replies()
+                if p.rstrip("?.").upper().endswith(("DON'T YOU", "ARE YOU"))
+                and ("," in p or "-" in p)]
+        self.assertGreaterEqual(len(tags), 2, "tag questions vanished")
+        for keyword, payload in tags:
+            self.assertTrue(payload.endswith("?"), "%s: %r" % (keyword, payload))
+
+    def test_a_two_sentence_reply_takes_the_mood_of_its_last_clause(self):
+        # "HOW DO YOU DO. PLEASE STATE YOUR PROBLEM" ends in an imperative. The
+        # wh-word in the greeting half must not make the whole thing a question.
+        pairs = [(k, p) for k, m, p in self.replies() if "." in p[:-1]]
+        self.assertTrue(pairs, "no multi-sentence replies left to check")
+        for keyword, payload in pairs:
+            self.assertTrue(payload.endswith("."), "%s: %r" % (keyword, payload))
+
+    def test_the_greeting_is_terminated_too(self):
+        self.assertIn(rules.GREETING[-1:], ("?", "."))
+        self.assertEqual(eliza.sentence_case(rules.GREETING),
+                         "How do you do. Please tell me your problem.")
+
+    def test_the_scripts_typo_is_corrected(self):
+        for keyword, mood, payload in self.replies():
+            self.assertNotIn("APOLIGIZE", payload.upper(),
+                             "%s still carries Weizenbaum's typo" % keyword)
+        self.assertTrue(any("APOLOGIZE" in p.upper()
+                            for _, _, p in self.replies()),
+                        "the SORRY reply disappeared instead of being fixed")
+
+    def test_proper_nouns_survive_sentence_case(self):
+        self.assertEqual(eliza.sentence_case("I AM SORRY, I SPEAK ONLY ENGLISH."),
+                         "I am sorry, I speak only English.")
+
+    def test_no_reply_is_left_unterminated(self):
+        for keyword, mood, payload in self.replies():
+            self.assertIn(payload[-1:], ("?", ".", "!"),
+                          "%s: %r" % (keyword, payload))
+
+
 class TestPanelBudget(unittest.TestCase):
     """Replies must still fit the panel now that they are a character longer.
 

@@ -1,19 +1,32 @@
 # Morning runbook: the TFLM image on live silicon
 
 Written the night of 2026-08-18, to be executed by whoever is holding the board
-with the user at the desk. It is steps, not intent — the intent is in
+with the user at the desk. **Executed 2026-08-19**: the flash took, 4a-4d all
+passed, `check_tflm_device.py` exited 0 on 30/30 bit-identical with worst count
+0, and TinyMaix differed on top-1 in 5 of the 30 — the 3 documented
+`kw_unknown` patches plus `problem_01` and `wonder_01`, which are real
+recordings. TFLM 245.6 ms per inference against TinyMaix's 66.6 ms, both
+measured in that one session. The two corrections marked *2026-08-19* below
+came out of running it. It is steps, not intent — the intent is in
 [tflm-usermod.md](tflm-usermod.md) (why TFLM at all) and
 [restore-factory-firmware.md](restore-factory-firmware.md) (what the images are).
 
-**State the board is in right now.** Powered down, carrying the verified 16 MB
-image and a working ELIZA deploy. Nothing is half-done, so there is nothing to
-finish before starting.
+**State the board is in as of 2026-08-19, after the run.** Carrying the
+combined TFLM image and a fresh ELIZA deploy, with every staged test file
+removed. Nothing is half-done.
 
 | | |
 | --- | --- |
-| firmware | `WAVESHARE_RP2350_TOUCH_EPAPER_154-v1.28.0-16MB.uf2` |
-| filesystem | 15,728,640 bytes, 27 files deployed |
-| port last night | `/dev/cu.usbmodem1401` — **do not assume it, see step 1** |
+| firmware | `WAVESHARE_RP2350_TOUCH_EPAPER_154-v1.28.0-16MB-tflm.uf2` (`e7b1069a…`) |
+| filesystem | 15,728,640 bytes, 20 files — the ELIZA program and its data, nothing else |
+| port | `/dev/cu.usbmodem1401` — **do not assume it, see step 1** |
+| `import tflm` | works; the module is in this image |
+
+Re-running this document from step 0 is safe and repeats the measurement. Note
+that flashing the *same* image again does **not** reformat the filesystem: the
+block count is unchanged, so littlefs mounts what is already there. Only a
+change of flash geometry — this image or the plain one against the stock
+`RPI_PICO2` build — triggers the reformat step 2 protects against.
 
 ## What is being tested, in gating order
 
@@ -181,11 +194,17 @@ in which case something is wrong that it will characterise.
 ## 4. TFLM on the board, in gating order
 
 Copy the two fixtures 4b needs — they live in `build/`, which is gitignored,
-and the board has no networking. 4c copies its own, 30 more files:
+and the board has no networking. 4c copies its own, 30 more files.
+
+**They go in `build/` on the device, not at the root.** `test_tflm_module.py`
+opens them by the relative paths `build/si_real.tflite` and
+`build/kw_unknown_0.bin`, so root copies fail with a bare `OSError: ENOENT` at
+the open, which reads like a missing file rather than a misplaced one:
 
 ```sh
-uvx mpremote connect $PORT cp build/si_real.tflite :si_real.tflite
-uvx mpremote connect $PORT cp build/kw_unknown_0.bin :kw_unknown_0.bin
+uvx mpremote connect $PORT mkdir :build
+uvx mpremote connect $PORT cp build/si_real.tflite :build/si_real.tflite
+uvx mpremote connect $PORT cp build/kw_unknown_0.bin :build/kw_unknown_0.bin
 ```
 
 ### 4a. Does the module exist
@@ -365,8 +384,22 @@ interrupted command, a tool that exits early — the board stays parked there,
 which reads exactly like dead hardware and is not. It also means the deployed
 program is not running, so the user pressing the screen gets nothing.
 
-The fix is a soft reboot, which drops out of raw REPL and runs `main.py` from
-the top:
+**Check the host first — this bit us on 2026-08-19.** Both fixes below need the
+port, and neither can get it if something on this Mac is already holding it. A
+stale `mpremote`, or a `pyserial` script that hung in `close()`, produces
+*exactly* the same `could not enter raw repl`, and so does `picotool`
+failing to reach the device. The board is fine and nothing will tell you so:
+
+```sh
+lsof /dev/cu.usbmodem1401
+```
+
+Kill whatever it names, then retry. On the morning this was written the board
+answered `alive` immediately afterwards **with no reset at all** — which is the
+proof it had never hung, since a hung program would still have been hung.
+
+If the port is genuinely free, the fix is a soft reboot, which drops out of raw
+REPL and runs `main.py` from the top:
 
 ```sh
 uvx mpremote connect $PORT soft-reset

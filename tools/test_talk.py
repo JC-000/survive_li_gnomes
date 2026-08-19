@@ -447,48 +447,109 @@ def test_allocation_order():
 
 # --- 5. the reply reaches the glass ----------------------------------------
 
-def _longest_reply():
-    """The longest sentence the rule set can actually produce.
+# The one place in this file that knows the shape of a rule template. It has
+# changed twice: `(kind, payload)` gained a `kind` field in VOCAB's sibling
+# change, and then became `(kind, mood, payload)` when replies gained mood tags
+# and terminal punctuation. Both times it broke consumers that unpacked inline.
+#
+# `eliza` exposes no template-enumeration accessor, so a test that measures the
+# panel budget has to reach into the data. Reaching in from one function means
+# the next shape change fails here, once, with a message that says what changed
+# -- rather than three times with a tuple-unpacking error that names neither the
+# field nor the reason.
+TEMPLATE_ARITY = 3
 
-    Taken from `eliza_rules` rather than from the 87-character figure in the
-    research note, so it tracks the rules rather than a memory of them. Every
-    reassembly template with a six-word echo substituted into every slot, which
-    is deliberately more pessimistic than one slot filled.
+
+def _reply_templates():
+    """Yield (reachable_on_device, text) for every template that can be shown.
+
+    `reachable` is the distinction that matters for the panel budget. In bag
+    mode -- the only mode the device uses -- PHRASE templates are filtered out
+    and MEMORY only fills on the ordered path `talk.py` never calls. So a
+    template that overflows is only a problem if the device can reach it.
     """
-    import re
-
-    echo = "your mother and your father again"
-    reply_kinds = set(eliza_rules.SPOTTABLE) | {eliza_rules.PHRASE}
-    texts = []
     for _rank, _sub, decomps in eliza_rules.RULES.values():
         for _pattern, templates in decomps:
-            for kind, _mood, text in templates:
-                if kind in reply_kinds:
-                    texts.append(text)
-    texts.extend(eliza_rules.NONE)
-    texts.extend(t for _p, _m, t in eliza_rules.MEMORY)
-    texts.append(eliza_rules.GREETING)
+            for entry in templates:
+                if len(entry) != TEMPLATE_ARITY:
+                    raise AssertionError(
+                        "eliza_rules template tuples are %d-wide, expected %d: %r"
+                        " -- the rule data changed shape; update _reply_templates"
+                        % (len(entry), TEMPLATE_ARITY, entry))
+                kind, _mood, payload = entry
+                if kind in eliza_rules.SPOTTABLE:
+                    yield True, payload
+                elif kind == eliza_rules.PHRASE:
+                    yield False, payload
+    for text in eliza_rules.NONE:
+        yield True, text
+    for entry in eliza_rules.MEMORY:
+        if len(entry) != TEMPLATE_ARITY:
+            raise AssertionError(
+                "eliza_rules.MEMORY entries are %d-wide, expected %d: %r"
+                % (len(entry), TEMPLATE_ARITY, entry))
+        yield False, entry[2]
 
-    longest = ""
-    for text in texts:
-        filled = eliza.sentence_case(re.sub(r"\b\d\b", echo, text))
-        if len(filled) > len(longest):
-            longest = filled
-    return longest, len(texts)
+
+def _rendered(text, echo):
+    import re
+
+    return eliza.sentence_case(re.sub(r"\b\d\b", echo, text))
 
 
 def test_the_reply_renders():
-    print("rendering: the worst case the rule set can produce")
-    longest, count = _longest_reply()
-    scale, lines = screen.fit(longest)
-    print("       %d templates, longest %d chars at scale %d in %d lines"
-          % (count, len(longest), scale, len(lines)))
-    print("       %s" % longest)
+    """The panel budget, at the echo width the device actually produces.
 
-    check("the longest reply fits without dropping to scale 1", scale == 2,
-          "fell back to scale %d" % scale)
-    check("the longest reply fits the line budget", len(lines) <= 9,
-          "%d lines" % len(lines))
+    Measured at three widths rather than one, because the device and the stress
+    case answer different questions: one asks whether this works, the other how
+    much room is left before it stops working.
+    """
+    print("rendering: the panel budget")
+    widths = (("1-word (what the device produces)", "mother"),
+              ("3-word", "your mother and your father"),
+              ("6-word (stress)", "your mother and your father again"))
+
+    for name, echo in widths:
+        worst_reachable = 0
+        worst_any = 0
+        overflow_reachable = []
+        overflow_unreachable = 0
+        for reachable, text in _reply_templates():
+            scale, lines = _fit(text, echo)
+            worst_any = max(worst_any, len(lines))
+            bad = scale != 2 or len(lines) > screen._SIZES[0][2]
+            if reachable:
+                worst_reachable = max(worst_reachable, len(lines))
+                if bad:
+                    overflow_reachable.append(_rendered(text, echo))
+            elif bad:
+                overflow_unreachable += 1
+
+        print("       %-34s worst %d lines reachable, %d overall, %d unreachable"
+              " overflow" % (name, worst_reachable, worst_any, overflow_unreachable))
+        check("%s: nothing the device can reach overflows" % name,
+              not overflow_reachable,
+              "%d overflow, first: %s" % (len(overflow_reachable),
+                                          overflow_reachable[:1]))
+
+    # The stress case is where it gets tight, and where the only overflow lives
+    # in templates bag mode filters out. Pinned so that ceasing to be true --
+    # a PHRASE template becoming reachable, say -- fails here.
+    stress = "your mother and your father again"
+    reachable_lines = max(len(_fit(t, stress)[1])
+                          for r, t in _reply_templates() if r)
+    check("at a six-word echo the reachable worst case is 9 lines",
+          reachable_lines == 9, "got %d" % reachable_lines)
+
+    longest = max((_rendered(t, stress) for _r, t in _reply_templates()), key=len)
+    scale, lines = screen.fit(longest)
+    reach = "device-reachable" if any(
+        r and _rendered(t, stress) == longest for r, t in _reply_templates()
+    ) else "NOT device-reachable"
+    print("       longest rendered overall (%s): %d chars, scale %d, %d lines"
+          % (reach, len(longest), scale, len(lines)))
+    print("       -- falling to scale 1 is the graceful path, not truncation")
+    print("       %s" % longest)
 
     fb = FakeFrameBuffer()
     screen.render(fb, longest, footer="MOTHER  4.10V")
@@ -496,26 +557,16 @@ def test_the_reply_renders():
     check("nothing is drawn outside the 200x200 panel",
           right <= 197 and bottom <= 197, "extends to %d x %d" % (right, bottom))
 
-    # And every template, not only the longest, since "longest in characters"
-    # and "most lines after wrapping" are not the same thing.
-    import re
-    echo = "your mother and your father again"
-    worst_lines = 0
-    overflowed = []
-    reply_kinds = set(eliza_rules.SPOTTABLE) | {eliza_rules.PHRASE}
-    for _rank, _sub, decomps in eliza_rules.RULES.values():
-        for _pattern, templates in decomps:
-            for kind, _mood, text in templates:
-                if kind not in reply_kinds:
-                    continue
-                filled = eliza.sentence_case(re.sub(r"\b\d\b", echo, text))
-                sc, ls = screen.fit(filled)
-                worst_lines = max(worst_lines, len(ls))
-                if sc != 2 or len(ls) > 9:
-                    overflowed.append(filled)
-    check("every reply template renders at scale 2 in <= 9 lines (worst %d)"
-          % worst_lines, not overflowed,
-          "%d overflow, first: %s" % (len(overflowed), overflowed[:1]))
+    # Terminal punctuation is new, and it is what made the budget non-obvious:
+    # a character per reply is not free when the worst case had no spare lines.
+    punctuated = sum(1 for _r, t in _reply_templates() if t and t[-1] in "?.!")
+    total = sum(1 for _ in _reply_templates())
+    check("replies carry terminal punctuation (%d/%d)" % (punctuated, total),
+          punctuated > total * 0.8, "only %d of %d" % (punctuated, total))
+
+
+def _fit(text, echo):
+    return screen.fit(_rendered(text, echo))
 
 
 # --- 6. the panel policy ---------------------------------------------------

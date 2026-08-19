@@ -67,6 +67,13 @@ _ASSUMED_IN_BAG = ("ARE", "AM", "IS", "WAS", "I", "YOU", "MY", "YOUR", "ME")
 # Stripped outright; unlike _BREAKS these carry no clause boundary.
 _PUNCTUATION = ":\"()"
 
+# Words sentence_case must not lower-case. The script is all upper case, so
+# nothing in it marks a proper noun and the whole corpus contains exactly one:
+# XFREMD's "I AM SORRY, I SPEAK ONLY ENGLISH". Rendered "english" it looks like
+# a typo on the panel. Kept as a set rather than a rule because there is no rule
+# -- if a template ever names a person or place, add it here.
+_PROPER = ("english",)
+
 
 def _rand_below(n):
     """Uniform random int in [0, n), via the RP2350 hardware RNG.
@@ -111,10 +118,12 @@ def sentence_case(text):
         return text
     words = []
     # Several replies are two sentences ("HOW DO YOU DO. PLEASE STATE YOUR
-    # PROBLEM"), so the capital has to follow the full stop, not just lead.
+    # PROBLEM."), so the capital has to follow the full stop, not just lead.
     start = True
     for word in text.lower().split():
-        if start or word == "i" or word.startswith("i'"):
+        if word.strip(".,?!'") in _PROPER:
+            word = word[0].upper() + word[1:]
+        elif start or word == "i" or word.startswith("i'"):
             word = word[0].upper() + word[1:]
         start = word[-1:] in (".", "!", "?")
         words.append(word)

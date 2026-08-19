@@ -137,12 +137,33 @@ _VERBS = ("SEE", "THINK", "FEEL", "KNOW", "BELIEVE", "WANT", "NEED", "TELL",
           "BOTHERS", "HEAR", "MIND", "BE", "BEEN", "GETTING", "WANTING",
           "THINKING", "SURE", "CONCERNED", "WORRIED", "WORRY", "PLEASE")
 
+_NEGATED_AUX = ("DONT", "DON'T", "CANT", "CAN'T", "DOESNT", "DOESN'T",
+                "ARENT", "AREN'T", "ISNT", "ISN'T", "WONT", "WON'T",
+                "WOULDNT", "WOULDN'T", "HAVENT", "HAVEN'T", "COULDNT",
+                "COULDN'T", "DIDNT", "DIDN'T")
+
 # Hand-set moods for templates the heuristic reads wrongly. Kept short on
 # purpose -- if this grows past a handful the heuristic is the thing to fix.
 MOOD_OVERRIDES = {
     # Elliptical, but a genuine question rather than an echo of the user.
     "SOMEONE SPECIAL PERHAPS": QUESTION,
 }
+
+# Spelling corrections to the script's own text.
+#
+# APOLIGIZE is Weizenbaum's typo, present in the 1966 CACM appendix at the
+# SORRY keyword. It survived because a teletype transcript is a working
+# document; on a 200x200 panel it is a misspelling in 16-pixel type with
+# nothing else on screen, and it reads as a bug in this program rather than as
+# a period detail. Same trade as I -> ME.
+SPELLING = {
+    "APOLIGIZE": "APOLOGIZE",
+}
+
+
+def respell(template):
+    """Apply SPELLING. Runs before punctuate(), so words are still bare."""
+    return " ".join(SPELLING.get(word, word) for word in template.split())
 
 
 def mood_of(template):
@@ -157,8 +178,27 @@ def mood_of(template):
     if template in MOOD_OVERRIDES:
         return MOOD_OVERRIDES[template]
 
+    # A reply of two sentences takes its mood from the last one: "HOW DO YOU
+    # DO. PLEASE STATE YOUR PROBLEM" ends in an imperative, and the wh-word in
+    # the greeting half must not turn the whole thing into a question.
+    if "." in template[:-1]:
+        return mood_of(template.rsplit(".", 1)[1].strip())
+
     words = template.split()
-    plain = [w.strip(",.'").upper() for w in words]
+    plain = [w.strip(",.'-").upper() for w in words]
+
+    # A negated auxiliary *opening* the reply is a question -- "DON'T YOU KNOW",
+    # "CAN'T YOU BE MORE POSITIVE". Mid-sentence it is not: "I DON'T UNDERSTAND
+    # THAT" and the imperative "PLEASE DON'T APOLOGIZE" are both statements.
+    if plain and plain[0] in _NEGATED_AUX:
+        return QUESTION
+
+    # A tag question is a question however it started: "YOU HAVE A PARTICULAR
+    # PERSON IN MIND, DON'T YOU", "YOU'RE NOT REALLY TALKING ABOUT ME - ARE YOU".
+    if len(plain) >= 2 and plain[-1] in ("YOU", "I", "IT", "THEY"):
+        if plain[-2] in _NEGATED_AUX or plain[-2] in _AUX:
+            if "," in template or "-" in template:
+                return QUESTION
 
     # A wh-word anywhere makes it a question: "IN WHAT WAY", "WHO, FOR EXAMPLE".
     if any(w in _WH for w in plain):
@@ -166,7 +206,7 @@ def mood_of(template):
     if plain and plain[0] in _AUX:
         return QUESTION
 
-    # A contraction carries its own verb -- "THAT'S", "DON'T", "AREN'T".
+    # A contraction elsewhere carries its own verb -- "THAT'S", "I'VE".
     if any("'" in w for w in words):
         return STATEMENT
 
@@ -314,6 +354,7 @@ def compile_template(node, decomposition):
     text = " ".join(t if isinstance(t, str) else " ".join(t) for t in node)
     if text.startswith("="):
         return (GOTO, None, text[1:])
+    text = respell(text)
     # PRE rewrites are input, not output, so they are never punctuated; every
     # other reply is, here, once, for every consumer.
     mood = mood_of(text)
@@ -338,7 +379,8 @@ def build(top):
 
         # The opening line is a bare sentence, not a keyword entry.
         if greeting is None and not is_rule(form) and " ".join(form).startswith("HOW DO YOU DO"):
-            greeting = " ".join(form)
+            greeting = punctuate(respell(" ".join(form)),
+                                 mood_of(" ".join(form)))
             continue
 
         if head == "MEMORY":
@@ -346,7 +388,7 @@ def build(top):
             templates = []
             for block in form[2:]:
                 split = block.index("=")
-                text = " ".join(block[split + 1:])
+                text = respell(" ".join(block[split + 1:]))
                 templates.append((
                     compile_decomposition(block[:split]),
                     mood_of(text),
