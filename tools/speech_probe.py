@@ -124,7 +124,10 @@ def bring_up(i2c, rate):
         res_in=16,
         res_out=16,
         volume=0,
-        mic_gain=3,
+        # listen.MIC_GAIN, not a literal: 3 was measured to clip every real
+        # utterance (f2bc58e), and a probe that calibrates the enrolment
+        # thresholds must capture through the same gain enrolment uses.
+        mic_gain=listen.MIC_GAIN,
     )
 
     audio = audio_pio_mpy.AudioPIO(

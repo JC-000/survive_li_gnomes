@@ -169,45 +169,59 @@ PRESETS = (
            note="everything at once, including a lead-in breath of silence"),
 )
 
-# Voices.
+# Voices. The download queue completed during this session; all eleven the
+# user asked for are installed, and every one below is verified distinct by
+# `check_distinct` before it is used.
 #
 # The quality suffix is load-bearing. `Samantha` and `Samantha (Enhanced)` are
-# both installed here and are different voices (170.9 Hz vs 180.7 Hz, different
-# MD5s); ask for the bare name and you get the compact one, which is the tier
-# this whole exercise exists to avoid. And `say -v` renders an *uninstalled*
-# name in the system default and exits 0 -- `Zoe` is not installed on this Mac
-# and comes back byte-identical to Samantha (Enhanced) -- so `check_distinct`
-# runs before anything else.
+# both installed and are *different* voices (170.9 vs 180.7 Hz, different
+# MD5s) -- ask for the bare name and you get the compact tier, which is what
+# this exercise exists to avoid. Where only one tier is installed the bare name
+# resolves to it (`Zoe` and `Zoe (Premium)` are byte-identical), so the suffix
+# is harmless to include and dangerous to omit. Add it always.
 #
-# Natural pitch, no markup, "Tell me more about your family":
+# Natural pitch, no markup, on "Tell me more about your family":
 #
-#     Susan (Enhanced)    162.1 Hz      Samantha (Enhanced)  180.7 Hz
-#     Nicky (Enhanced)    165.8 Hz      Allison (Enhanced)   200.5 Hz
-#     Ava (Premium)       172.3 Hz      Joelle (Enhanced)    237.1 Hz
-#                                       Noelle (Enhanced)    268.9 Hz
+#     Susan (Enhanced)    162.1 Hz     Samantha (Enhanced)  180.7 Hz
+#     Nicky (Enhanced)    165.8 Hz     Allison (Enhanced)   200.5 Hz
+#     Ava (Premium)       172.3 Hz     Zoe (Premium)        220.5 Hz
+#     Samantha (compact)  170.9 Hz     Joelle (Enhanced)    237.1 Hz
+#                                      Noelle (Enhanced)    268.9 Hz  EXCLUDED
+#     Tom (Enhanced)      128.9 Hz     Evan (Enhanced)      121.2 Hz
+#     Nathan (Enhanced)   107.0 Hz
 #
-# Ava carries the prosody sweep on two counts. It is the only Premium voice
-# installed, a tier above every other candidate; and at 172 Hz it already sits
-# in the lower half of the range, which matters because [[pbas]] is the control
-# that costs naturalness -- it moves the pitch without moving the formants with
-# it, so the further a voice is dragged the less it sounds like a woman
-# speaking low and the more it sounds like a recording slowed down.
+# **Noelle is excluded on the user's ear** -- "sounds like a female child".
+# That is a judgement about character, not quality, and no measurement here
+# would have caught it. But it does give the shortlist an axis it was missing:
+# Noelle is also the highest-pitched voice installed, and Joelle (237) and Zoe
+# (220) are the next two. That is a hypothesis for the user's ear rather than a
+# finding -- apparent age is not a function of F0 -- so both stay in, ordered by
+# pitch and flagged, instead of being quietly dropped on a correlation.
 #
-# Susan and Nicky start lower still but are only Enhanced, and Joelle and
-# Noelle are dropped from the shortlist because 237 and 269 Hz are too far
-# above the target to reach without exactly that damage. Both are stated
-# criteria rather than verdicts: every remaining candidate appears at p3-warm
-# so the ranking can be overruled by ear, which is the only instrument that
-# actually settles this.
+# Ava carries the prosody sweep on two counts: it is one of only two Premium
+# voices installed, a tier above the rest; and at 172 Hz it already sits low,
+# which matters because [[pbas]] moves pitch without moving formants, so the
+# further a voice is dragged the less it sounds like a woman speaking low and
+# the more like a slowed recording. Susan and Nicky start lower but are only
+# Enhanced. Every candidate also appears at p3-warm so this can be overruled by
+# ear, which is the only instrument that settles it.
 PRIMARY = "Ava (Premium)"
 SHORTLIST = (
+    # The prosody axis, on one voice.
     (PRIMARY, ("p0-neutral", "p1-lower", "p2-slow", "p3-light", "p3-warm",
                "p4-darker", "p5-intimate")),
-    ("Susan (Enhanced)", ("p0-neutral", "p3-warm")),
-    ("Nicky (Enhanced)", ("p3-warm",)),
-    ("Samantha (Enhanced)", ("p3-warm",)),
-    ("Allison (Enhanced)", ("p3-warm",)),
-    ("Moira", ("p3-warm",)),       # en_IE, for an accent that is not American
+    # The voice axis, at one setting, ordered low to high natural pitch so the
+    # apparent-age question is walked deliberately rather than stumbled into.
+    ("Susan (Enhanced)", ("p3-warm",)),        # 162 Hz, Siri-generation
+    ("Nicky (Enhanced)", ("p3-warm",)),        # 166 Hz
+    ("Samantha (Enhanced)", ("p3-warm",)),     # 181 Hz
+    ("Allison (Enhanced)", ("p3-warm",)),      # 200 Hz
+    ("Zoe (Premium)", ("p3-warm",)),           # 220 Hz, Siri-generation
+    ("Joelle (Enhanced)", ("p3-warm",)),       # 237 Hz -- listen for age
+    # Not a candidate for what was asked for. One render so that if a male
+    # option is ever wanted, the best American male voice installed is a known
+    # quantity rather than another download-and-wait.
+    ("Tom (Enhanced)", ("p3-warm",)),
 )
 
 # Five real replies, one of each kind the corpus has to cover. Not invented
@@ -233,14 +247,19 @@ LINES = (
 # is what ships.
 #
 # Each entry is (id, head, filler, tail). A **trailing** slot -- tail empty --
-# has one join, and it is the easy case: the pitch is falling into a sentence
-# end anyway, so a fresh render starting there is not far wrong. A **medial**
-# slot has two joins and the tail fragment has to begin mid-clause, where `say`
-# will give it a sentence-initial contour it has no business having.
+# has one join; a **medial** slot has two, and its tail fragment has to begin
+# mid-clause.
 #
-# The first two below are medial and are the honest test. The trailing pair are
-# kept for contrast, so the difference between the easy and hard case is
-# audible rather than asserted.
+# These were included expecting trailing to be the easy case, on the reasoning
+# that the pitch is falling into a sentence end there anyway. **The measurement
+# says otherwise** -- trailing steps 10.6 and 10.2 semitones, the two largest
+# figures recorded, against 10.3/8.9 and 0.0/7.6 for medial. The damage is done
+# by the head fragment taking a terminal contour, and it does that regardless of
+# what follows; a medial slot merely adds a second join rather than worsening
+# the first.
+#
+# That kills the obvious mitigation -- expand the five medial templates whole,
+# splice the rest -- so the pair is kept here as the evidence for why.
 SEAMS = (
     ("medial-thinking", "Does thinking of", "mother", "bring anything else to mind"),
     ("medial-remember", "Why do you remember", "mother", "just now"),
@@ -561,40 +580,72 @@ FILESYSTEM = 3 * 1024 * 1024
 
 
 def budget(outdir, voice, preset):
-    """Render the whole corpus once and report what it actually costs.
+    """Render the corpus once and report what it actually costs.
 
-    Every second here is measured, not estimated: the point of the exercise is
-    to replace an arithmetic guess about corpus size with a real total for a
-    real voice at a real prosody. Rendering ~400 lines takes a couple of
-    minutes and settles it.
+    Every second is measured, not estimated. The output is a *curve* rather
+    than a single total, because the seam measurement (see `seam_jumps`) makes
+    the small spliced corpus look unusable, and the question then becomes not
+    "does the whole corpus fit" -- it does not -- but "how much of it fits".
+
+    The curve is over vocabulary depth. Canned replies have no slot and always
+    ship. Each additional noun the device can speak lights up every slotted
+    template at once, at a roughly constant cost per noun, and a template that
+    has no clip for the noun it heard can fall through to a deflection exactly
+    as an unrecognised word already does. So the corpus can be truncated
+    anywhere along this curve without the program breaking -- it just gets
+    shyer, which this project has already decided is the good failure.
     """
     canned, whole, pieces, medial = corpus_lines()
     scratch = os.path.join(outdir, "budget-scratch")
     os.makedirs(scratch, exist_ok=True)
+    path = os.path.join(scratch, "b.wav")
+    done = [0]
 
-    def total_seconds(lines, tag):
-        seconds = 0.0
-        path = os.path.join(scratch, "%s.wav" % tag)
-        for i, text in enumerate(lines):
-            # .capitalize() only so `say` does not read an all-caps line as an
-            # initialism. It has no effect on duration, which is all we want.
-            preset.render(voice, text.capitalize(), path)
-            rate, samples = read_wav(path)
-            seconds += len(trim(samples, rate)) / rate
-            if i % 50 == 0:
-                print("    %s %d/%d" % (tag, i, len(lines)), flush=True)
-        return seconds
+    def seconds(text):
+        # .capitalize() only so `say` does not read an all-caps line as an
+        # initialism. It has no effect on duration, which is all we want.
+        preset.render(voice, text.capitalize(), path)
+        rate, samples = read_wav(path)
+        done[0] += 1
+        if done[0] % 50 == 0:
+            print("    rendered %d" % done[0], flush=True)
+        return len(trim(samples, rate)) / rate
 
-    # `whole` already contains `canned`, so the canned pass is charged once and
-    # subtracted rather than rendered twice.
-    canned_s = total_seconds(canned, "canned")
-    slotted = [line for line in whole if line not in set(canned)]
-    slotted_s = total_seconds(slotted, "slotted")
-    pieces_s = total_seconds(pieces, "pieces")
-    return ((len(canned), canned_s),
-            (len(whole), canned_s + slotted_s),
-            (len(canned) + len(pieces), canned_s + pieces_s),
-            len(medial))
+    canned_s = sum(seconds(text) for text in canned)
+    pieces_s = sum(seconds(text) for text in pieces)
+
+    # Attribute every expanded sentence to the filler word it used, so the
+    # curve can be summed without re-rendering anything.
+    nouns = [w.lower() for w in vocab.NOUNS]
+    feelings = [w.lower() for w in vocab.FEELINGS]
+    by_word = {word: 0.0 for word in nouns + feelings}
+    count = {word: 0 for word in nouns + feelings}
+    canned_set = set(canned)
+    for text in whole:
+        if text in canned_set:
+            continue
+        last = text.rsplit(" ", 1)[-1].lower()
+        word = last if last in by_word else next(
+            (w for w in by_word if (" %s " % w) in text.lower()), None)
+        word = word if word else nouns[0]
+        by_word[word] += seconds(text)
+        count[word] += 1
+
+    # Feelings are not optional in the same way -- there are only four and they
+    # gate the whole "I am sorry to hear you are ___" branch -- so they are
+    # charged into the base rather than spread along the curve.
+    base_s = canned_s + sum(by_word[w] for w in feelings)
+    base_n = len(canned) + sum(count[w] for w in feelings)
+    curve, running, tally = [], base_s, base_n
+    for i, word in enumerate(nouns):
+        running += by_word[word]
+        tally += count[word]
+        curve.append((i + 1, word, tally, running))
+    # The spliced corpus still ships the canned replies whole -- there is
+    # nothing in them to assemble -- so it is canned PLUS pieces, never pieces
+    # alone. Counting only the pieces understates it by 83 clips.
+    return ((len(canned), canned_s), (base_n, base_s), curve,
+            (len(canned) + len(pieces), canned_s + pieces_s), len(medial))
 
 
 def main():
@@ -643,11 +694,11 @@ def main():
               "`__ASSEMBLED` is the sentence built from separately rendered pieces",
               "and spliced; `__WHOLE` is the same sentence rendered in one pass.",
               "Same voice, same preset. Play them back to back.", "",
-              "**`medial-*` are the honest test.** Their slot sits mid-sentence, so",
-              "the tail fragment has to start mid-clause and `say` gives it a",
-              "sentence-initial contour it should not have. `trailing-*` have the",
-              "slot at the end, one join, and are the easy case — included so the",
-              "difference between the two is audible rather than asserted.", "",
+              "`medial-*` have the slot mid-sentence and two joins; `trailing-*`",
+              "have it at the end and one. Trailing was expected to be the easy",
+              "case and **is not** — it produces the two largest steps in the table,",
+              "because the damage comes from the head fragment taking a terminal",
+              "contour and it does that either way.", "",
               "The step column is the pitch discontinuity measured either side of",
               "each join, in semitones, against the same measurement taken on the",
               "intact sentence at the same point. It does **not** say whether a",
@@ -665,40 +716,60 @@ def main():
     if args.budget:
         preset = {p.name: p for p in PRESETS}["p3-warm"]
         print("measuring corpus budget for %s / p3-warm..." % PRIMARY)
-        (n_canned, s_canned), (n_whole, s_whole), (n_asm, s_asm), n_medial = \
-            budget(args.outdir, PRIMARY, preset)
-        lines += ["", "## Corpus budget — %s, p3-warm" % PRIMARY, "",
-                  "Measured, not estimated: every line below was rendered and its",
-                  "`say` padding trimmed before counting.", "",
-                  "**canned** is the slotless replies alone -- the floor, and a",
-                  "device that shipped only these would still hold a conversation,",
-                  "because a reply it cannot speak can fall through to a deflection",
-                  "exactly as an unrecognised word already does. **whole** adds every",
-                  "slotted template with every filler, each its own clip, spliced",
-                  "nowhere. **assembled** adds them as stems plus filler words,",
-                  "joined on the device.", "",
-                  "| | Clips | Seconds |", "| --- | --- | --- |",
-                  "| canned only | %d | %.1f |" % (n_canned, s_canned),
-                  "| + slots, whole | %d | %.1f |" % (n_whole, s_whole),
-                  "| + slots, assembled | %d | %.1f |" % (n_asm, s_asm), "",
-                  "| Format | canned | whole | assembled |",
-                  "| --- | --- | --- | --- |"]
+        (n_canned, canned_s), (base_n, base_s), curve, (n_pieces, pieces_s), \
+            n_medial = budget(args.outdir, PRIMARY, preset)
+
+        def mb(seconds, bps):
+            return seconds * bps / 1024 / 1024
+
+        lines += ["", "## What fits — %s, p3-warm" % PRIMARY, "",
+                  "Measured, not estimated: every line rendered and its `say`",
+                  "padding trimmed before counting. Sizes are 4-bit IMA ADPCM,",
+                  "which is the only format the corpus fits in at all (see below).",
+                  "",
+                  "The whole corpus does not fit. But it does not have to: a",
+                  "template with no clip for the noun it heard can fall through to",
+                  "a deflection, exactly as an unrecognised word already does, so",
+                  "the corpus can be truncated anywhere on this curve and the",
+                  "program still works — it just gets shyer.", "",
+                  "| Vocabulary | Clips | Seconds | 16 kHz | 8 kHz |",
+                  "| --- | --- | --- | --- | --- |",
+                  "| canned replies only | %d | %.0f | %.2f MB | %.2f MB |"
+                  % (n_canned, canned_s, mb(canned_s, 8000), mb(canned_s, 4000)),
+                  "| + the 4 feelings | %d | %.0f | %.2f MB | %.2f MB |"
+                  % (base_n, base_s, mb(base_s, 8000), mb(base_s, 4000))]
+        for i, word, clips, seconds in curve:
+            lines.append("| + %d noun%s (…%s) | %d | %.0f | %.2f MB | %.2f MB |"
+                         % (i, "" if i == 1 else "s", word, clips, seconds,
+                            mb(seconds, 8000), mb(seconds, 4000)))
+        full = curve[-1][3]
+        lines += ["", "Against a **3 MB filesystem**, and that is before the code,",
+                  "the DTW templates and the existing shake/fart/laugh clips — so",
+                  "the usable ceiling is well under 3 MB, not at it.", "",
+                  "**The full noun set does not fit at any format.** At 8 kHz it is",
+                  "3.38 MB and at 16 kHz 6.76 MB. Leaving ~1 MB for everything else,",
+                  "the practical stop is around **7 nouns at 8 kHz** or **2 at",
+                  "16 kHz** — which is the real choice: a wider vocabulary at",
+                  "telephone quality, or a narrower one that sounds better.", "",
+                  "### Why not the other formats", "",
+                  "| Format | canned only | full corpus |", "| --- | --- | --- |"]
         for label, bps in FORMATS:
             def cell(seconds):
                 size = seconds * bps
-                mark = "" if size <= FILESYSTEM else " **over**"
-                return "%.2f MB%s" % (size / 1024 / 1024, mark)
-            lines.append("| %s | %s | %s | %s |"
-                         % (label, cell(s_canned), cell(s_whole), cell(s_asm)))
-        lines += ["", "Against a %d MB filesystem, and that is before the code, the"
-                  % (FILESYSTEM // 1024 // 1024),
-                  "DTW templates and the existing shake/fart/laugh clips.", "",
-                  "%d of the slotted templates put the slot in the *middle* of the"
+                return "%.2f MB%s" % (size / 1024 / 1024,
+                                      "" if size <= FILESYSTEM else " **over**")
+            lines.append("| %s | %s | %s |" % (label, cell(canned_s), cell(full)))
+        lines += ["", "### The spliced alternative", "",
+                  "Rendering the slotted templates as stems plus filler words and",
+                  "joining them on the device — the canned replies still ship whole —",
+                  "costs **%d clips, %.0f s, %.2f MB at 16 kHz**, which fits"
+                  % (n_pieces, pieces_s, mb(pieces_s, 8000)),
+                  "easily. The seam measurement above is why it is not the",
+                  "recommendation; see the audition files before trusting either.",
+                  "",
+                  "%d of the slotted templates put the slot mid-sentence, needing"
                   % n_medial,
-                  "sentence rather than at the end, so assembling them needs two",
-                  "splices and a fragment that stops mid-phrase. If the seam turns",
-                  "out to be audible, those are the ones to expand whole and the",
-                  "sentence-final ones to keep assembled.", ""]
+                  "two joins rather than one.", ""]
 
     with open(os.path.join(args.outdir, "INDEX.md"), "w") as handle:
         handle.write("\n".join(lines) + "\n")

@@ -132,10 +132,12 @@ See [docs/design.md](docs/design.md) for why.
 | `tools/mic_margin.py` | Does the recogniser have any margin? Run this first |
 | `tools/speech_probe.py` | Sample rate, FFT and match timings — needs the board |
 | `tools/eliza_repl.py` | Converse with DOCTOR on the host, no hardware |
+| `tools/voice_audition.py` | Render DOCTOR's replies through `say`, to pick a speaking voice |
 | `tools/test_*.py` | Six suites, all runnable without the board |
 | `docs/design.md` | Why it is built this way |
 | `docs/hardware.md` | Full pinout, what's verified, and the gotchas |
-| `docs/speech-design.md` | Why speech is done this way, and what was ruled out |
+| `docs/speech-design.md` | Why speech *input* is done this way, and what was ruled out |
+| `docs/speech-voice.md` | Speaking the reply — voice, prosody, and what fits in 3 MB |
 | `docs/speech.md` | The feature spec — normative, to the last integer |
 | `docs/restore-factory-firmware.md` | Putting the original firmware back |
 

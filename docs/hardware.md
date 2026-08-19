@@ -5,7 +5,8 @@
 Pin numbers come from Waveshare's demo code
 ([waveshareteam/RP2350-Touch-ePaper-1.54](https://github.com/waveshareteam/RP2350-Touch-ePaper-1.54),
 Apache-2.0). Everything marked *verified* was then confirmed against this
-physical board on 2026-08-17.
+physical board — the display, I2C and battery figures on 2026-08-17, the audio
+and microphone ones on 2026-08-18.
 
 ## MCU
 
@@ -134,15 +135,77 @@ Also: `AudioPIO.__init__` only stores configuration. The state machines stay
 `None` until `mclk_pio_init()` and `dout_pio_init()` are called, and `start()`
 silently does nothing without them.
 
+### The DAC comes out of reset muted
+
+`es8311.init()` does **not** clear the mute. `shake.py:84` calls
+`self._codec.mute(False)` before it plays; anything else that plays must do the
+same, and re-mute afterwards if it is about to record.
+
+This one fails in the shape CLAUDE.md exists for: the DMA runs, `play_finished()`
+returns true, no exception is raised, and nothing comes out of the speaker. It
+cost a bench session in `src/listen.py`, which until it grew an activation chirp
+had only ever recorded and so had never needed the unmute. See the comment at
+`listen.py:292`.
+
+### Playback finishing is not silence
+
+`play_finished()` reports that the DMA has drained into the PIO FIFO. The speaker
+is still moving. *Measured* on this board, after a 300 ms tone:
+
+| | |
+| --- | --- |
+| tone rings on for | ~180 ms |
+| then decays to the noise floor over a further | ~140 ms |
+
+Constant: `listen.CHIRP_SETTLE_MS`. Because the microphone and the speaker share
+this codec, returning on `play_finished()` alone left up to ~300 ms of tone and
+decay at the head of every capture. That poisons an endpointer specifically — it
+calibrates its noise floor from the first frames, so a loud head raises the floor
+until the real word can no longer clear the start threshold. **14 of 22 real
+recordings were rejected** before the settle wait was added.
+
+Time the wait from the *start* of playback, not from the DMA finishing.
+
 ### Microphone
 
 Same codec, `DIN` on **GP2**. Bring up with `mclk_pio_init()` +
 `din_pio_init()`, then `dma_record_into(buf)` with an `array("h")` — the RX path
 is 16-bit mono, unlike the 32-bit packed playback path.
 
-*Verified*: 1 s captured at 24 kHz, exact timing, noise floor around -44 dBFS at
-`mic_gain=0`. `mic_gain=6` rails the input, so those units are not dB. Nothing in
-the project uses it yet.
+*Verified* at **24 kHz** (1 s, exact timing) and at **16 kHz** — 15990 Hz
+measured against wall clock, −0.1 %, using the `[4096000, 16000, ...]` row
+already present in `es8311.COEFF_DIV` (MCLK = 256 fs = 4 096 000,
+BCLK = MCLK / 4 = 64 fs). No resampler and no new register table were needed.
+
+The register write succeeding proves nothing on its own — the RX path returns
+samples at whatever rate the codec is really running, so a rate that never
+changed looks exactly like one that did. Re-measure with `tools/speech_probe.py`
+section (a), which counts samples against elapsed microseconds, after any change
+to MCLK or to the `COEFF_DIV` table.
+
+#### `mic_gain` is not decibels, and the vendor default clips speech
+
+Written to ES8311 REG16. The vendor default is **3**, and on this board that is
+too high for speech at arm's length. Gain 6 rails the input outright, which is
+what says the units are not dB.
+
+| `mic_gain` | measured floor (endpointer `IMN`) | real utterances |
+| --- | --- | --- |
+| 3 — vendor default | 323 | every one clipped: 2415 saturated samples across ten keywords, in runs of 2–3 |
+| 2 | 137 | |
+| **1** — `listen.MIC_GAIN` | **75** | peaks 6723–23008, **zero** samples clipped |
+| 0 | 36 | noise floor ≈ −44 dBFS |
+
+Runs of 2–3 saturated samples are a waveform riding the rail at its peaks. That
+is a different fault from the isolated single-sample impulses this microphone
+also produces in silence (0.06–0.35 % of samples across many short runs, at every
+gain, cause not established). Only the first is fixed by lowering the gain, so it
+is worth telling them apart before reaching for the setting.
+
+Dropping two steps was free rather than a trade. The floor scales with the
+setting, so signal-to-noise is unchanged — the room gets quieter along with the
+speech — and the endpointer's `IMX/IMN` ratio is gain-invariant, since scaling
+every sample cancels. *Measured*: zero rejections either way.
 
 ## Battery
 
@@ -211,12 +274,14 @@ means building MicroPython with the correct flash size.
 
 - **microSD** — untested; no card was ever inserted. Pins are SPI0 SCK 18,
   MOSI 19, MISO 20, CS 23.
-- **Microphone** — captures cleanly (verified: 1 s at 24 kHz, noise floor around
-  -44 dBFS at gain 0, railed at gain 6, so the gain units are not dB), but
-  nothing uses it. It is the obvious route to recording a real clip in place of
-  a synthesised one.
+- **Isolated microphone impulses** — single samples at full scale, 0.06–0.35 % of
+  samples across many short runs, present at every gain and in silence. Cause not
+  established; not clipping, which shows as runs of 2–3 (see Microphone above).
+  They have not been traced to a fault and nothing downstream has yet been shown
+  to care, but a median filter is the obvious guard if something does.
 - **The other 13 MB of flash** — the stock `RPI_PICO2` build assumes a 4 MB part.
   Recovering it needs a custom MicroPython build.
 
 Everything else on the board has been driven: display (full and partial refresh),
-touch, SHTC3, RTC, battery sense and the ES8311 codec.
+touch, SHTC3, RTC, battery sense, the ES8311 codec, and the microphone at both
+24 and 16 kHz.

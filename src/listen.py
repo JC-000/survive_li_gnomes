@@ -13,10 +13,12 @@ board with a ~490 KB heap. The ES8311 supports 8-48 kHz natively and
 
 i.e. MCLK = 256 * fs = 4 096 000, BCLK = MCLK / 4 = 1.024 MHz = 64 fs.
 
-**Unverified against the hardware.** The register write can succeed while the
-rate does not change, and the RX path returns samples either way -- "no exception
-raised" proves nothing here, exactly as it proves nothing for the panel. Measure
-it with `tools/speech_probe.py`, which counts samples against wall-clock time.
+**Verified on the hardware**: 15990 Hz measured against wall clock, -0.1 %.
+Worth measuring rather than assuming, because the register write can succeed
+while the rate does not change and the RX path returns samples either way -- "no
+exception raised" proves nothing here, exactly as it proves nothing for the
+panel. Re-measure with `tools/speech_probe.py` section (a), which counts samples
+against wall-clock time, if MCLK or the `COEFF_DIV` row ever changes.
 
 Two things that will bite silently if changed:
 
@@ -58,10 +60,10 @@ MAX_SAMPLES = SAMPLE_RATE * MAX_RECORD_MS // 1000
 
 # Written to ES8311 REG16. Not decibels: docs/hardware.md records the noise floor
 # at around -44 dBFS with gain 0, and gain 6 railing the input outright, so the
-# units are whatever the vendor's table means. 3 is the vendor default and a
-# starting point for speech at arm's length -- UNVERIFIED, and the first thing to
-# adjust if the probe reports a railed or inaudible signal.
-# Measured at the bench: at gain 3 every real utterance pinned full scale --
+# units are whatever the vendor's table means.
+#
+# 3 is the vendor default and was the setting here first. Measured at the bench
+# it is wrong for this board: at gain 3 every real utterance pinned full scale --
 # 849 clipped runs across ten words, mean run 2-3 samples, which is a waveform
 # touching the rail at its peaks rather than the isolated glitches seen in
 # silence. The noise floor scales cleanly with this setting (IMN 323/137/75/36

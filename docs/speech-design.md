@@ -464,9 +464,10 @@ from, so it is clear what is being replaced.
 - **CNN inference time — `estimate`, from Hello Edge's 12 ms on a Cortex-M7 with
   CMSIS-NN.** Scaled for clock and for TinyMaix's generic C. TinyMaix publishes
   no Cortex-M benchmark table. Only matters if the DTW path is abandoned.
-- **The 16 kHz codec reconfiguration — `unknown`.** The ES8311 datasheet says
-  8–48 kHz; this board has only ever been driven at 24 kHz. Confirm
-  electrically, not by absence of an exception.
+- **The 16 kHz codec reconfiguration — `verified`.** The ES8311 datasheet says
+  8–48 kHz, and this board, which had only ever been driven at 24 kHz, measured
+  **15990 Hz** at the 16 kHz setting — −0.1 %, counted against wall clock rather
+  than inferred from the absence of an exception. See `docs/hardware.md`.
 - **Rejection threshold — `unknown` and unknowable in advance.** It is the one
   number that has to come from a person listening to the thing, and per
   [Precision over recall](#precision-over-recall) it should be tuned against

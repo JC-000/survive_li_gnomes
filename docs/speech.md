@@ -62,11 +62,11 @@ not be noticed.
 | Codec setting | ES8311 with MCLK = 4096000 = 256 x fs |
 
 The vendor coefficient table in `src/es8311.py` carries a `[4096000, 16000, ...]`
-row, so this is a supported combination and not an extrapolation. Note that the
-microphone was verified at **24 kHz**, not 16 (`docs/hardware.md`); 16 kHz is
-the design rate and needs confirming on hardware. Resampling 24 kHz down is not
-an escape route — 24000/16000 is 3:2 and needs a real filter — so configure the
-codec for 16 kHz directly.
+row, so this is a supported combination and not an extrapolation. The
+microphone is verified at **both** rates (`docs/hardware.md`): 24 kHz first, and
+then 16 kHz measured at **15990 Hz** against wall clock, −0.1 %. Resampling
+24 kHz down is not an escape route — 24000/16000 is 3:2 and needs a real filter —
+so configure the codec for 16 kHz directly.
 
 24 kHz would also cost 50% more frames for nothing: speech energy above 8 kHz
 does not distinguish these words. Going the other way to 8 kHz would be actively
