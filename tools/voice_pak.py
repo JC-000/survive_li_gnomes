@@ -5,6 +5,7 @@
     uv run tools/voice_pak.py corpus-voice/ --only-audition    # one clip, first
     uv run tools/voice_pak.py corpus-voice/ --only "Please go on."
     uv run tools/voice_pak.py corpus-voice/ --fixtures         # + decoder fixtures
+    uv run tools/voice_pak.py corpus-voice/ --fixture-module   # src/voice_vectors.py
 
 Output is gitignored by the existing `corpus*/` rule. Regenerating it is a
 `say` run and a couple of minutes; nothing here is hand-edited.
@@ -32,12 +33,12 @@ Enumerated properly, and counting every rotation state rather than a sample:
     111  replies reachable from a one-word bag       (`corpus()`)
     +2   the greeting and NOTHING_HEARD, which talk.py speaks directly
     ---
-    113  clips  (measured: 234 s, 1.79 MB at 4-bit 16 kHz ADPCM)
+    113  clips  (measured: 247.7 s, 1.89 MB at 4-bit 16 kHz ADPCM)
 
-Of those 111, only 68 were observed in a 300,000-turn random walk over the
+Of those 111, only 68 were observed in a 30,000-turn interleaved walk over the
 engine; the other 43 need a rule-rotation state the walk never produced but
 that nothing forbids. They are shipped anyway. A clip nobody plays costs
-~16 KB of a 15 MB filesystem; a *missing* clip is a reply the toy mouths
+~17 KB of a 15 MB filesystem; a *missing* clip is a reply the toy mouths
 silently, and there is no way to tell that apart from a decoder bug at the
 desk. So `corpus()` returns the provable superset, and
 `tools/test_voice_pak.py` asserts the observed set is inside it.
@@ -45,7 +46,7 @@ desk. So `corpus()` returns the provable superset, and
 The consequence is that the budget question docs/speech-voice.md leaves open --
 "a wider vocabulary at telephone quality, or a narrower one that sounds
 better" -- is not a real choice. The whole corpus fits at 16 kHz with 13 MB
-spare, and would fit uncompressed too (7.5 MB). ADPCM is kept because the
+spare, and would fit uncompressed too (7.56 MB). ADPCM is kept because the
 streaming decoder is already being built for it and 4x fewer flash reads is
 free headroom, not because anything is tight.
 
@@ -376,20 +377,22 @@ def adpcm_encode(samples, step_index=INITIAL_STEP_INDEX):
     return bytes(header) + bytes(packed)
 
 
-def adpcm_decode(blob):
-    """One ADPCM blob -> PCM int16. The reference the device must match.
+def decode_nibbles(data, n_nibbles, predictor, index, offset=0):
+    """Decode a bare nibble stream. The reference the device must match.
+
+    Split out from `adpcm_decode` so it takes the same arguments as the
+    device's `adpcm.decode_into(src, src_off, nib_count, out, out_off, state)`
+    -- a fixture can then pin the decode loop on its own, with no clip header
+    and no container in the way. When those two disagree, the difference is in
+    the arithmetic and nowhere else.
 
     Deliberately the plainest possible transcription of the standard. It is not
     the decoder that ships -- that one is `@micropython.viper` and lives on the
     device -- it is the thing that decides whether the shipping one is right.
     """
-    n_samples, predictor, index, _reserved = CLIP_HEADER.unpack_from(blob, 0)
-    if not n_samples:
-        return []
-    out = [predictor]
-    body = blob[CLIP_HEADER.size:]
-    for i in range(n_samples - 1):
-        byte = body[i // 2]
+    out = []
+    for i in range(n_nibbles):
+        byte = data[offset + i // 2]
         code = (byte >> 4) if i % 2 else (byte & 0x0F)
         step = STEP_TABLE[index]
         diff = step >> 3
@@ -404,6 +407,15 @@ def adpcm_decode(blob):
         index = max(0, min(88, index + INDEX_TABLE[code & 7]))
         out.append(predictor)
     return out
+
+
+def adpcm_decode(blob):
+    """One ADPCM blob -> PCM int16, sample 0 included."""
+    n_samples, predictor, index, _reserved = CLIP_HEADER.unpack_from(blob, 0)
+    if not n_samples:
+        return []
+    return [predictor] + decode_nibbles(blob, n_samples - 1, predictor, index,
+                                        offset=CLIP_HEADER.size)
 
 
 def blob_length(n_samples):
@@ -540,6 +552,252 @@ def fixtures(outdir):
     return written
 
 
+# --- the fixture module, which also runs on the board ------------------------
+#
+# `fixtures()` above writes loose binary files, which are convenient on the host
+# and useless on the device: they are gitignored with the rest of `corpus-voice`
+# and there is no filesystem path the board shares with this Mac. The real
+# bit-exactness check has to *run on the board*, because the failure that
+# matters is invisible here -- CPython's ints are unbounded and viper's are
+# 32-bit machine words that wrap silently. So the same vectors are also emitted
+# as a deployable module, exactly as `tools/make_fixtures.py` emits
+# `src/speech_fixtures.py` for the MFCC front end.
+
+# NOT `voice_fixtures.py`. `src/adpcm.py`'s author generates a module of that
+# name from the loose binary fixtures above, and for a while both tools wrote
+# it and silently overwrote each other. Two generators, two files, and the
+# device suite decides which it wants -- these vectors and those cover
+# different things (see the docstring the generator emits).
+FIXTURE_MODULE = os.path.join(ROOT, "src", "voice_vectors.py")
+
+# How much of each expected output is written out literally. The rest is
+# pinned by checksum, and that is a RAM decision rather than a stylistic one:
+# a 4000-sample expected output is 8 KB of bytes object, and `talk.reserve()`
+# already bisects this heap to place three blocks. Head and tail locate a
+# divergence; the checksum is what proves there is not one. Same split, and the
+# same rolling hash, as `speech_fixtures.checksum`.
+FIXTURE_EDGE = 64
+FIXTURE_SAMPLES = 4001     # 4000 nibbles -- walks most of the step table
+
+
+def checksum(values):
+    """acc = acc * 31 + v, the hash `src/speech_fixtures.py` already uses.
+
+    A sum would cancel; this will not. Masked to 30 bits so it stays a small
+    int on a 32-bit MicroPython build.
+    """
+    acc = 0
+    for value in values:
+        acc = (acc * 31 + value) & 0x3FFFFFFF
+    return acc
+
+
+def _nibble_cases():
+    """Vectors that pin the decode loop with no container around it.
+
+    Each is (name, why, predictor, index, nibble bytes, nibble count). The
+    stress cases exist because the arithmetic is furthest from its bounds
+    where the tables are: `diff` is largest at index 88, where a table edited
+    by hand stops being <= 32767, and the index clamps are the two places an
+    off-by-one hides behind output that still has the right length.
+    """
+    return (
+        # Hand-checkable. Every code 0-15 once, in an order that moves the
+        # index up and down rather than only up, from the canonical start
+        # state. Sixteen nibbles is few enough to walk on paper.
+        ("tiny", "every code once from (0, 0) -- checkable by hand",
+         0, 0, bytes((0x40, 0x51, 0x62, 0x73, 0xc8, 0xd9, 0xea, 0xfb)), 16),
+        # 0x77: both nibbles code 7, the largest positive step and +8 on the
+        # index. Drives index to 88 in eleven nibbles and pins the predictor
+        # at +32767 -- the int32 headroom case, and the only place `diff`
+        # reaches 61436.
+        ("index-to-max", "0x77 run: index pins at 88, predictor at +32767",
+         0, 0, bytes([0x77] * 32), 64),
+        # 0xff: code 15, the same magnitude downward.
+        ("index-to-min-value", "0xff run: predictor pins at -32768",
+         0, 0, bytes([0xff] * 32), 64),
+        # The other clamp, and it is observable without instrumenting the
+        # decoder. 0x80 is code 0 then code 8: plus and minus `step >> 3`, so
+        # the predictor oscillates near zero instead of slamming into a rail
+        # and hiding what the index is doing. Both codes index by -1, so the
+        # index walks 88 -> 0 in 88 nibbles. At index 0 the step is 7 and
+        # `7 >> 3` is **zero**, so the predictor stops moving altogether --
+        # a flat tail is proof the index reached 0 and clamped there, and a
+        # decoder that let it go negative would index past the end of the
+        # table rather than freeze.
+        ("index-down-to-zero", "0x80 run from index 88: index pins at 0 and "
+                               "the output goes flat",
+         0, 88, bytes([0x80] * 64), 128),
+        # Alternates code 15 and code 7 -- maximum swing in both directions at
+        # a climbing step size. Worst case for the clamps and for `diff`.
+        ("alternating-rails", "0x7f run: max negative then max positive, rising",
+         0, 0, bytes([0x7f] * 32), 64),
+        # A predictor that starts at the rail and is pushed further into it.
+        ("held-at-the-rail", "already at +32767 and still asked to go up",
+         32767, 88, bytes([0x77] * 16), 32),
+    )
+
+
+def _truncate_blob(blob, n_samples=FIXTURE_SAMPLES):
+    """A shorter but genuine clip, cut from a rendered one.
+
+    Bit-identical to the first `n_samples` of the real clip, because ADPCM is
+    a forward-only recurrence -- truncating the nibble stream cannot change
+    what came before it. Re-encoding the decoded audio instead would produce a
+    *different* blob and pin the fixture to the round trip rather than to the
+    corpus that ships.
+    """
+    if n_samples >= CLIP_HEADER.unpack_from(blob, 0)[0]:
+        return blob
+    _n, predictor, index, reserved = CLIP_HEADER.unpack_from(blob, 0)
+    body = blob[CLIP_HEADER.size:CLIP_HEADER.size + (n_samples // 2)]
+    return CLIP_HEADER.pack(n_samples, predictor, index, reserved) + body
+
+
+def _pcm_bytes(samples):
+    return struct.pack("<%dh" % len(samples), *samples)
+
+
+def _literal(data, indent="        "):
+    """`bytes` as source, wrapped. The house spelling -- see speech_fixtures."""
+    lines = []
+    for at in range(0, len(data), 20):
+        chunk = data[at:at + 20]
+        lines.append("%sb'%s'" % (indent, "".join("\\x%02x" % b for b in chunk)))
+    return "\n".join(lines) if lines else "%sb''" % indent
+
+
+def write_fixture_module(path, pak_path=None):
+    """Emit `src/voice_fixtures.py`. Returns (nibble cases, clip cases)."""
+    nibble = []
+    for name, why, predictor, index, data, count in _nibble_cases():
+        out = decode_nibbles(data, count, predictor, index)
+        nibble.append((name, why, predictor, index, data, count, out))
+
+    clips = []
+    if pak_path and os.path.exists(pak_path):
+        _rate, packed = read_pak(pak_path)
+        by_id = {i: b for i, b, _n in packed}
+        manifest = {clip_id(text): text for text, _m in corpus()}
+        # Three real clips, chosen for what they stress rather than at random:
+        # the one the human auditions, the one with the worst round-trip SNR in
+        # the corpus (the loudest and least predictable), and the longest.
+        wanted = [
+            (clip_id(AUDITION), "the audition clip -- what the user judged"),
+            (clip_id("Why do you ask?"), "worst round-trip SNR in the corpus"),
+            (clip_id("Don't you believe that dream has something to do with "
+                     "your problem?"), "the longest clip in the corpus"),
+        ]
+        for want, why in wanted:
+            if want not in by_id:
+                continue
+            blob = _truncate_blob(by_id[want])
+            clips.append((want, why, manifest.get(want, ""), blob,
+                          adpcm_decode(blob)))
+
+    lines = [
+        '"""Bit-exactness fixtures for the ADPCM voice decoder. Generated.',
+        "",
+        "Produced by `tools/voice_pak.py --fixture-module`, from the same",
+        "reference decoder that built `corpus-voice/voice.pak`. The device port",
+        "-- `src/adpcm.py` -- must reproduce every value here exactly.",
+        "",
+        "Complementary to `src/voice_fixtures.py`, which is generated by the",
+        "device side from whole-clip binary fixtures. These are the vectors",
+        "that one does not carry: a **nibble-level** stream with no clip",
+        "header, taking the arguments `adpcm.decode_into` takes, so the decode",
+        "loop can be pinned with nothing around it; the index clamp at **0**,",
+        "which is only observable as a tail that goes flat; and three clips of",
+        "**real rendered speech** cut from the shipping pak, where a nibble",
+        "order or a `>> 3` mistake shows up as audio rather than as",
+        "arithmetic. If the two modules are ever merged, this is what must",
+        "survive the merge.",
+        "",
+        "**Run this on the board, not only on the host.** CPython's ints are",
+        "unbounded and viper's are 32-bit machine words that wrap without",
+        "raising, so a host run cannot see the one failure these exist to",
+        "catch. Same reason `src/speech_fixtures.py` is deployed rather than",
+        "kept in `tools/`.",
+        "",
+        "`CASES` pins the decode loop with no container around it, and takes",
+        "the arguments `adpcm.decode_into` takes:",
+        "",
+        "    (name, why, predictor, index, nibbles, n_nibbles,",
+        "     head, tail, sum)",
+        "",
+        "`head` and `tail` are the first and last %d decoded samples as" % FIXTURE_EDGE,
+        "little-endian int16, and `sum` is `checksum()` over all of them. The",
+        "split is a RAM decision: a full 4000-sample expected output is 8 KB of",
+        "bytes object and this heap is already carved by hand. Head and tail",
+        "say *where* a divergence started; the checksum is what proves there",
+        "is not one, and it is a rolling hash rather than a sum precisely so",
+        "that two errors cannot cancel.",
+        "",
+        "`CLIPS` pins the whole path -- clip header, then nibbles -- on real",
+        "rendered speech cut from the shipping pak:",
+        "",
+        "    (id, why, text, blob, n_samples, head, tail, sum)",
+        "",
+        "`blob` is a genuine clip, not a re-encode: ADPCM is a forward-only",
+        "recurrence, so the first n samples of a longer clip are bit-identical",
+        "to a clip of n samples. Sample 0 is the header's predictor and is not",
+        "encoded, so a blob of n samples carries n-1 nibbles.",
+        '"""',
+        "",
+        "FORMAT = 1",
+        "EDGE = %d" % FIXTURE_EDGE,
+        "RATE = %d" % RATE,
+        "",
+        "",
+        "def checksum(values):",
+        '    """acc = acc * 31 + v. A sum would let two errors cancel."""',
+        "    acc = 0",
+        "    for value in values:",
+        "        acc = (acc * 31 + value) & 0x3FFFFFFF",
+        "    return acc",
+        "",
+        "",
+        "CASES = (",
+    ]
+
+    for name, why, predictor, index, data, count, out in nibble:
+        head, tail = out[:FIXTURE_EDGE], out[-FIXTURE_EDGE:]
+        lines += [
+            "    (%r, %r," % (name, why),
+            "     %d, %d," % (predictor, index),
+            "     (",
+            _literal(data),
+            "     ), %d," % count,
+            "     (",
+            _literal(_pcm_bytes(head)),
+            "     ), (",
+            _literal(_pcm_bytes(tail)),
+            "     ), %d)," % checksum(out),
+        ]
+    lines += [")", "", ""]
+
+    lines.append("CLIPS = (")
+    for clip_hex, why, text, blob, out in clips:
+        head, tail = out[:FIXTURE_EDGE], out[-FIXTURE_EDGE:]
+        lines += [
+            "    (%r, %r," % (clip_hex, why),
+            "     %r," % text,
+            "     (",
+            _literal(blob),
+            "     ), %d," % len(out),
+            "     (",
+            _literal(_pcm_bytes(head)),
+            "     ), (",
+            _literal(_pcm_bytes(tail)),
+            "     ), %d)," % checksum(out),
+        ]
+    lines += [")", ""]
+
+    with open(path, "w") as handle:
+        handle.write("\n".join(lines))
+    return nibble, clips
+
+
 # --- the build ---------------------------------------------------------------
 
 def build(outdir, texts, want_fixtures=False, pak_name="voice.pak"):
@@ -629,9 +887,29 @@ def main():
                     help="also write decoder fixtures for the device side")
     ap.add_argument("--list", action="store_true",
                     help="print the corpus and its sizing, render nothing")
+    ap.add_argument("--fixture-module", nargs="?", const=FIXTURE_MODULE,
+                    default=None, metavar="PATH",
+                    help="write the deployable bit-exactness fixtures to PATH "
+                         "(default %s) and render nothing. Reads real clips "
+                         "from <outdir>/voice.pak if one is there."
+                         % os.path.relpath(FIXTURE_MODULE, ROOT))
     args = ap.parse_args()
 
     texts = corpus()
+
+    if args.fixture_module:
+        nibble, clips = write_fixture_module(
+            args.fixture_module, os.path.join(args.outdir, "voice.pak"))
+        for name, why, _p, _i, _d, count, _out in nibble:
+            print("  case  %-20s %4d nibbles  %s" % (name, count, why))
+        for clip_hex, why, _text, blob, out in clips:
+            print("  clip  %-20s %4d samples in %d bytes  %s"
+                  % (clip_hex, len(out), len(blob), why))
+        if not clips:
+            print("  (no real-speech clips: %s has no voice.pak yet)"
+                  % args.outdir)
+        print("wrote %s" % args.fixture_module)
+        return 0
 
     if args.list:
         for text, moods in texts:

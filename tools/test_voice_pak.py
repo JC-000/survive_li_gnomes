@@ -361,6 +361,125 @@ def test_the_fixtures_cover_what_a_fast_decoder_gets_wrong():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_the_deployable_fixtures_say_what_they_claim(tmp):
+    """`src/voice_fixtures.py` is the contract with the device decoder.
+
+    Two things are checked, and the second is the one worth having. The first
+    is that the recorded head, tail and checksum are what this decoder
+    produces -- which catches a stale generated file. The second is that the
+    stress cases actually reach the states their `why` strings advertise: a
+    vector named "index pins at 88" that quietly stops at 40 is a test that
+    passes on both sides while covering nothing, and the name is the only
+    thing that would still say otherwise.
+    """
+    print("deployable fixtures")
+    path = voice_pak.FIXTURE_MODULE
+    if not os.path.exists(path):
+        print("  SKIP no %s -- run tools/voice_pak.py corpus-voice/ "
+              "--fixture-module" % path)
+        return
+    fixtures = test_talk._load_source("voice_fixtures", path)
+
+    def unpack(raw):
+        return list(struct.unpack("<%dh" % (len(raw) // 2), raw))
+
+    check("the module is a current one", fixtures.FORMAT == 1
+          and fixtures.RATE == voice_pak.RATE)
+    check("there are nibble cases and clip cases",
+          len(fixtures.CASES) >= 6 and len(fixtures.CLIPS) >= 3,
+          "%d cases, %d clips" % (len(fixtures.CASES), len(fixtures.CLIPS)))
+
+    by_name = {}
+    for name, _why, predictor, index, data, count, head, tail, total in \
+            fixtures.CASES:
+        out = voice_pak.decode_nibbles(data, count, predictor, index)
+        by_name[name] = out
+        check("%s: decodes to %d samples" % (name, count), len(out) == count)
+        check("%s: head matches" % name,
+              unpack(head) == out[:fixtures.EDGE])
+        check("%s: tail matches" % name,
+              unpack(tail) == out[-fixtures.EDGE:])
+        check("%s: checksum matches" % name,
+              fixtures.checksum(out) == total,
+              "%d vs %d" % (fixtures.checksum(out), total))
+        check("%s: nibble bytes are exactly half the nibble count" % name,
+              len(data) == (count + 1) // 2)
+
+    # The claims. Each is an observable consequence of the state the case is
+    # named for, so none of them needs the decoder instrumented.
+    check("tiny: uses all sixteen codes, so no code is untested",
+          len({(b >> 4) for b in voice_pak._nibble_cases()[0][4]}
+              | {(b & 0x0F) for b in voice_pak._nibble_cases()[0][4]}) == 16)
+    check("index-to-max: the predictor reaches +32767, which needs the step "
+          "to have grown", max(by_name["index-to-max"]) == 32767)
+    check("index-to-min-value: the predictor reaches -32768",
+          min(by_name["index-to-min-value"]) == -32768)
+    # At index 0 the step is 7 and 7 >> 3 is zero, so a decoder that clamped
+    # the index correctly stops moving. A decoder that let the index go
+    # negative would read off the front of the table instead.
+    tail_of = by_name["index-down-to-zero"][-40:]
+    check("index-down-to-zero: the output goes flat, so the index clamped at 0",
+          len(set(tail_of)) == 1, "%d distinct values in the tail"
+          % len(set(tail_of)))
+    check("held-at-the-rail: pushing further into the rail does not move it",
+          set(by_name["held-at-the-rail"]) == {32767})
+
+    known = {voice_pak.clip_id(text): text for text, _m in voice_pak.corpus()}
+    for clip_hex, _why, text, blob, n_samples, head, tail, total in \
+            fixtures.CLIPS:
+        out = voice_pak.adpcm_decode(blob)
+        check("clip %s: is a current reply" % clip_hex, clip_hex in known,
+              "not in the corpus")
+        check("clip %s: the text is the one that hashes to it" % clip_hex,
+              voice_pak.clip_id(text) == clip_hex)
+        check("clip %s: decodes to %d samples" % (clip_hex, n_samples),
+              len(out) == n_samples)
+        check("clip %s: head, tail and checksum match" % clip_hex,
+              unpack(head) == out[:fixtures.EDGE]
+              and unpack(tail) == out[-fixtures.EDGE:]
+              and fixtures.checksum(out) == total)
+
+    # The checksum is a pin only if it can fail. A plain sum could not tell
+    # these apart, which is why it is a rolling hash.
+    swapped = list(by_name["tiny"])
+    swapped[0], swapped[1] = swapped[1], swapped[0]
+    check("the checksum notices two samples swapped",
+          fixtures.checksum(swapped) != fixtures.checksum(by_name["tiny"]))
+
+
+def test_the_fixture_module_can_load_on_the_board():
+    """It has to run under MicroPython, where most of the library is absent.
+
+    The point of generating literals rather than reading the pak is that the
+    module needs nothing at import but the interpreter. An `import struct` or
+    an f-string would sail through here and fail on the device, where there is
+    no second chance to notice.
+    """
+    print("fixture module portability")
+    path = voice_pak.FIXTURE_MODULE
+    if not os.path.exists(path):
+        print("  SKIP no %s" % path)
+        return
+    import ast
+
+    with open(path) as handle:
+        source = handle.read()
+    # Parsed, not grepped. A grep for "f'" matches the byte b'\x7f' in every
+    # data literal in the file, which is how the first version of this check
+    # failed on nothing at all.
+    tree = ast.parse(source, path)
+    imports = [node for node in ast.walk(tree)
+               if isinstance(node, (ast.Import, ast.ImportFrom))]
+    check("imports nothing at all", not imports,
+          "imports on lines %r" % [n.lineno for n in imports])
+    fstrings = [node for node in ast.walk(tree)
+                if isinstance(node, ast.JoinedStr)]
+    check("no f-strings, which MicroPython's compiler is picky about",
+          not fstrings, "on lines %r" % [n.lineno for n in fstrings])
+    check("it is a generated file and says so",
+          "Generated" in source.splitlines()[0])
+
+
 # --- 3. the container --------------------------------------------------------
 
 def _synthetic_pak(path, count=40):
@@ -516,8 +635,10 @@ def main():
     test_the_round_trip_preserves_length_and_sounds_like_the_input()
     test_the_encoder_matches_cpythons_own_ima()
     test_the_fixtures_cover_what_a_fast_decoder_gets_wrong()
+    test_the_fixture_module_can_load_on_the_board()
     tmp = tempfile.mkdtemp(prefix="voice-pak-")
     try:
+        test_the_deployable_fixtures_say_what_they_claim(tmp)
         test_the_pak_walks(tmp)
         test_a_duplicate_is_refused(tmp)
     finally:
