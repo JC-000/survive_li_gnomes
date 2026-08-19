@@ -63,6 +63,15 @@ except MemoryError:
     print("early arena reservation failed; spotter will be degraded")
     ARENA = None
 
+# The model blob too (~30 KB): the last big post-import allocation, and the
+# next thing the heap refused once the arena moved up here. Read now, on the
+# same near-pristine heap, handed to bind().
+try:
+    with open("si_model.tflite", "rb") as _fh:
+        MODEL_BLOB = _fh.read()
+except Exception as _exc:  # noqa: BLE001 -- absent on the host, fine
+    MODEL_BLOB = None
+
 import screen
 import vad
 
@@ -596,7 +605,7 @@ def reserve():
     # ~9 KB lower, and it is the path that has to work.
     if si_spot is not None:
         _si = si_spot.Spotter()
-        if _si.bind(buffers=si_patch_buffers(), arena=ARENA):
+        if _si.bind(buffers=si_patch_buffers(), arena=ARENA, blob=MODEL_BLOB):
             # The backend is named on purpose: two runtimes can serve this
             # program, they compute measurably different probabilities from the
             # same weights, and "which one is this board running" was an

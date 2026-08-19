@@ -308,12 +308,16 @@ class _Tflm:
     name = "tflm"
     default_path = MODEL_PATH_TFLM
 
-    def __init__(self, path, arena_bytes=TFLM_ARENA_BYTES, arena=None):
-        handle = open(path, "rb")
-        try:
-            blob = handle.read()
-        finally:
-            handle.close()
+    def __init__(self, path, arena_bytes=TFLM_ARENA_BYTES, arena=None, blob=None):
+        if blob is None:
+            # On the device the blob should arrive pre-read: this read is a
+            # ~30 KB allocation, and post-import the heap refused exactly that
+            # (MemoryError: 30208) once the arena had been rescued the same way.
+            handle = open(path, "rb")
+            try:
+                blob = handle.read()
+            finally:
+                handle.close()
         # Held for the object's life: TFLM plans into it and keeps pointers
         # into it, so it must outlive the model exactly as the arena does in
         # every other TFLM integration.
@@ -370,7 +374,7 @@ class Spotter:
     def available(self):
         return self.model is not None
 
-    def bind(self, path=None, buffers=None, backend=None, arena=None):
+    def bind(self, path=None, buffers=None, backend=None, arena=None, blob=None):
         """Load the model. Returns True on success; never raises.
 
         A board that cannot load the model must still hold a conversation --
@@ -408,7 +412,12 @@ class Spotter:
             return False
 
         try:
-            kwargs = {"arena": arena} if (arena is not None and factory.name == "tflm") else {}
+            kwargs = {}
+            if factory.name == "tflm":
+                if arena is not None:
+                    kwargs["arena"] = arena
+                if blob is not None:
+                    kwargs["blob"] = blob
             self.model = factory(path if path is not None
                                  else factory.default_path, **kwargs)
             self.backend = factory.name
