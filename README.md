@@ -47,24 +47,53 @@ it is what clears ghosting.
 
 ## The other program: push-to-talk ELIZA
 
-A second program shares the board. Hold the screen, say something, let go, and
-Weizenbaum's 1966 DOCTOR answers on the e-paper.
+A second program shares the board. Hold the screen, wait for the chirp, say
+something, let go — Weizenbaum's 1966 DOCTOR answers on the e-paper, **and out
+loud** through the speaker.
 
 ```sh
-./tools/deploy.sh eliza     # the 8-ball is still the bare default
+./tools/build_firmware.sh                  # MicroPython + 16 MB flash + TFLM, flash it once
+uv run tools/voice_pak.py corpus-voice/    # render the voice (~2 min of `say`)
+./tools/deploy.sh eliza                    # the 8-ball is still the bare default
 ```
 
 It cannot transcribe speech — nothing that fits 490 KB of RAM can. Instead it
-spots about 21 words with DTW template matching and leans on the fact that
-DOCTOR was always a keyword matcher: unrecognised speech falls through to "Please
-go on", which is a real DOCTOR response rather than an error message. A shy
-recogniser and the program's own personality are the same thing, so it is tuned
-for precision over recall.
+spots 21 keywords and leans on the fact that DOCTOR was always a keyword
+matcher: unrecognised speech falls through to "Please go on", which is a real
+DOCTOR response rather than an error message. A shy recogniser and the
+program's own personality are the same thing, so it is tuned for precision
+over recall.
 
-**It needs enrolling before it works.** Templates are your voice, recorded
-through the board's own microphone — not the Mac's, because a recogniser
-enrolled on one microphone and run through another loses most of its margin.
-With the board connected:
+**It works out of the box — no enrolment.** The spotter that ships is a
+speaker-independent CNN (`models/si_real.tflite`, a DS-CNN after ARM's
+"Hello Edge" paper) trained entirely on synthetic macOS `say` voices — no
+human recording is in the weights; see [models/README.md](models/README.md)
+for provenance. Measured on this board against a real speaker held out from
+everything: **precision 1.000, recall 0.600**. It runs through a TFLite Micro
+usermod compiled into the firmware image, chosen because it is bit-identical
+to the host reference kernels — the TinyMaix backend it replaced computed
+different probabilities from the same weights
+([docs/tflm-usermod.md](docs/tflm-usermod.md)). Training your own model is one
+script: [tools/si_train.py](tools/si_train.py) on a corpus from
+[tools/say_corpus.py](tools/say_corpus.py); the full story is in
+[docs/speaker-independent.md](docs/speaker-independent.md) and
+[docs/cnn-on-device.md](docs/cnn-on-device.md).
+
+**The replies are spoken.** The board cannot synthesise speech at acceptable
+quality, so every line DOCTOR can reach (113 clips) is rendered on the Mac by
+`say`, IMA-ADPCM encoded, and packed into one ~1.9 MB `voice.pak` that streams
+from flash while the panel refreshes ([docs/speech-voice.md](docs/speech-voice.md)).
+Pick a different voice with `tools/voice_audition.py`. Without the pak the toy
+still works, silently — that is the designed degradation, same as the 8-Ball
+without a speaker.
+
+### The parked spotter: DTW template matching
+
+The CNN replaced an MFCC + DTW template matcher, which is parked, not deleted:
+`talk.py` falls back to it if the CNN is unavailable. It is speaker-*dependent*
+— templates are your voice, recorded through the board's own microphone (not
+the Mac's, because a recogniser enrolled on one microphone and run through
+another loses most of its margin). Only if you want that path:
 
 ```sh
 # 1. sample rate, FFT and match timings — runs on the board, src/ mounted
@@ -83,10 +112,6 @@ uvx --from pyserial python tools/enrol.py enrol-takes/
 python3 tools/record_templates.py --from enrol-takes/ --pack full
 ./tools/deploy.sh eliza
 ```
-
-Steps 1 and 2 calibrate what step 4 depends on, and step 3 says whether the
-recogniser has any margin at all before you spend ten minutes on it. Running
-them out of order risks a whole vocabulary recorded at the wrong sample rate.
 
 **Do not enrol into `takes/`.** It looks like the obvious name and it is
 already taken: `takes/` and `takes-oov/` hold the ten keywords and twelve
@@ -130,7 +155,10 @@ See [docs/design.md](docs/design.md) for why.
 | `src/es8311.py`, `src/audio_pio_mpy.py` | Codec + I2S-over-PIO, vendored from Waveshare |
 | `src/talk.py` | ELIZA entry point — hold to talk, spot, reply |
 | `src/eliza.py`, `src/eliza_rules.py` | The 1966 DOCTOR script and its interpreter |
-| `src/spotter.py`, `src/speech_tables.py` | On-device MFCC + DTW keyword spotter |
+| `src/si_spot.py`, `src/si_patch.py` | The CNN spotter: gates, backends, and the log-mel front end |
+| `src/spotter.py`, `src/speech_tables.py` | The parked MFCC + DTW keyword spotter |
+| `src/adpcm.py` | IMA ADPCM decoder + `voice.pak` reader — how the replies get spoken |
+| `models/` | The shipping CNN weights and their provenance |
 | `src/listen.py`, `src/vad.py`, `src/record_stream.py` | Capture, endpointing, streaming to the host |
 | `src/vocab.py`, `src/screen.py` | The spotted word list; full-panel text rendering |
 | `src/board.py` | Pin map + SHTC3, PCF85063A, FT6336U, Battery |
@@ -144,14 +172,20 @@ See [docs/design.md](docs/design.md) for why.
 | `tools/tflm_cases.py`, `tools/tflm_device_cases.py`, `tools/tflm_compare_cases.py` | The 30-case host-vs-device TFLM comparison, and its gate |
 | `tools/make_clip.py` | Convert audio to a raw clip the codec can DMA directly |
 | `tools/build_clips.sh` | Rebuild `clips/` — holds the per-clip level tuning |
+| `tools/si_train.py`, `tools/say_corpus.py` | Train the speaker-independent CNN on synthetic voices |
+| `tools/voice_pak.py` | Render and pack everything DOCTOR can say |
+| `tools/check_banned.sh`, `tools/setup_hooks.sh` | The banned-content gate — run `setup_hooks.sh` once per clone |
 | `tools/enrol.py`, `tools/pull_recording.py` | Record your voice through the board, over USB |
 | `tools/record_templates.py`, `tools/mfcc.py`, `tools/dtw.py` | Host reference for the spotter; builds templates |
 | `tools/mic_margin.py` | Does the recogniser have any margin? Run this first |
 | `tools/speech_probe.py` | Sample rate, FFT and match timings — needs the board |
 | `tools/eliza_repl.py` | Converse with DOCTOR on the host, no hardware |
 | `tools/voice_audition.py` | Render DOCTOR's replies through `say`, to pick a speaking voice |
-| `tools/test_*.py` | Six suites, all runnable without the board |
+| `tools/test_*.py` | Nineteen suites, all runnable without the board |
 | `docs/design.md` | Why it is built this way |
+| `docs/speaker-independent.md` | The road from DTW to the CNN, with every measurement |
+| `docs/cnn-on-device.md` | Getting the CNN onto the board, and what it scored there |
+| `docs/tflm-usermod.md` | The TFLite Micro usermod, and why TinyMaix was replaced |
 | `docs/hardware.md` | Full pinout, what's verified, and the gotchas |
 | `docs/speech-design.md` | Why speech *input* is done this way, and what was ruled out |
 | `docs/speech-voice.md` | Speaking the reply — voice, prosody, and what fits in 3 MB |
@@ -168,15 +202,16 @@ See [docs/design.md](docs/design.md) for why.
 | Battery sense | Working — 4.21 V, matches factory firmware |
 | SHTC3 temp/humidity | Working — used by `examples/display_status.py` |
 | PCF85063A RTC | Working |
-| ES8311 audio | Working — plays the shake, fart and laugh clips |
+| ES8311 audio | Working — plays the 8-Ball's clips and streams ELIZA's spoken replies |
 | ES8311 microphone | Working — 23991 Hz at 24 kHz, 15991 Hz at 16 kHz, measured against wall clock |
 | microSD | Untested, no card inserted |
 | Flash filesystem | Working — 15,728,640 bytes, 10 MB written and read back identically |
 
 Running MicroPython **v1.28.0**, built for this board by
-[`tools/build_firmware.sh`](tools/build_firmware.sh) so that all 16 MB of flash
-is addressed: the filesystem is **15,728,640 bytes**, measured, against the
-3 MB the stock `RPI_PICO2` image formats. 10 MB of it has been written and read
+[`tools/build_firmware.sh`](tools/build_firmware.sh) for two reasons: all 16 MB
+of flash is addressed — the filesystem is **15,728,640 bytes**, measured,
+against the 3 MB the stock `RPI_PICO2` image formats — and the TFLite Micro
+usermod that runs the CNN is compiled in ([docs/tflm-usermod.md](docs/tflm-usermod.md)). 10 MB of it has been written and read
 back to prove the part answers there and does not wrap.
 
 The stock image remains the rollback, and the factory C firmware was dumped
