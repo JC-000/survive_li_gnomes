@@ -1,5 +1,9 @@
 # survive_li_gnomes
 
+![The Lithium Gnomes stole the world's electrolyte. A Magic 8-Ball for
+leadership, a talking ELIZA for companionship, on e-paper that keeps the
+answer when the power dies.](docs/assets/banner.png)
+
 The **Lithium Gnomes** have stolen the world's electrolyte. Batteries are
 heirlooms, mains power is a rumour, and compute is too precious to waste on
 anything that does not keep you alive. What survives on one small board with a
@@ -214,6 +218,7 @@ See [docs/design.md](docs/design.md) for why.
 | `tools/si_train.py`, `tools/say_corpus.py` | Train the speaker-independent CNN on synthetic voices |
 | `tools/voice_pak.py` | Render and pack everything DOCTOR can say |
 | `tools/check_banned.sh`, `tools/setup_hooks.sh` | The banned-content gate; run `setup_hooks.sh` once per clone |
+| `tools/make_banner.py` | Redraw `docs/assets/banner.png`, the README/social-preview image |
 | `tools/enrol.py`, `tools/pull_recording.py` | Record your voice through the board, over USB |
 | `tools/record_templates.py`, `tools/mfcc.py`, `tools/dtw.py` | Host reference for the spotter; builds templates |
 | `tools/mic_margin.py` | Does the recogniser have any margin? Run this first |
